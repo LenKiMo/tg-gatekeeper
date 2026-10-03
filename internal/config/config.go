@@ -65,10 +65,14 @@ type Runtime struct {
 
 // GroupDefaults 是新群首次出现时的默认配置。
 type GroupDefaults struct {
-	Enabled        bool     `yaml:"enabled"`
-	Mode           string   `yaml:"mode"`
-	Welcome        string   `yaml:"welcome"`
+	Enabled bool   `yaml:"enabled"`
+	Mode    string `yaml:"mode"`
+	// Welcome 是欢迎语模板：{mention} 提及本人、{rules} 群规链接、{name}/{timeout}/{id}。
+	Welcome string `yaml:"welcome"`
+	// RulesMessageID / RulesLink 决定 {rules} 渲染成什么链接：显式链接优先，
+	// 其次由消息 ID 推导成 t.me/c/<内部ID>/<消息ID>。
 	RulesMessageID int64    `yaml:"rules_message_id"`
+	RulesLink      string   `yaml:"rules_link"`
 	AdWords        []string `yaml:"ad_words"`
 }
 
