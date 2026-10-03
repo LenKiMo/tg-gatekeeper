@@ -144,38 +144,6 @@ func (s *YAMLStore) SaveGroup(_ context.Context, cfg domain.GroupConfig, expecte
 	return cfg, nil
 }
 
-// Probe 实现 ports.Store：验证配置文件可解析、目录可写，且不写入任何群配置。
-func (s *YAMLStore) Probe(_ context.Context) error {
-	if !s.writes {
-		// 只读模式：只验证现有文件能被解析（构造函数已经做过一次，这里再确认一次可读）。
-		if _, err := os.ReadFile(s.path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("YAML 群配置不可读: %w", err)
-		}
-		return nil
-	}
-	dir := filepath.Dir(s.path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			return fmt.Errorf("创建 YAML 目录 %s 失败: %w", dir, err)
-		}
-	}
-	f, err := os.CreateTemp(dir, ".gatekeeper-probe-*.yaml")
-	if err != nil {
-		return fmt.Errorf("目录不可写（%s）: %w", dir, err)
-	}
-	name := f.Name()
-	_, werr := f.WriteString("groups: []\n")
-	cerr := f.Close()
-	_ = os.Remove(name) // 探针文件随即删除，不留残留
-	if werr != nil {
-		return fmt.Errorf("写入探针文件失败: %w", werr)
-	}
-	if cerr != nil {
-		return fmt.Errorf("关闭探针文件失败: %w", cerr)
-	}
-	return nil
-}
-
 // Close 实现 ports.Store。
 func (s *YAMLStore) Close() error { return nil }
 

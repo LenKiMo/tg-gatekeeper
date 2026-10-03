@@ -54,9 +54,6 @@ type Store interface {
 	EnsureGroup(ctx context.Context, chatID int64, defaults domain.GroupConfig) (domain.GroupConfig, error)
 	GetGroup(ctx context.Context, chatID int64) (domain.GroupConfig, error)
 	SaveGroup(ctx context.Context, cfg domain.GroupConfig, expectedRevision uint64) (domain.GroupConfig, error)
-	// Probe 验证存储可读写，且**不留下任何数据**（自检用）。
-	// 不要用 EnsureGroup(某个哨兵 chat_id) 代替：那会在生产库里永久留下一条假群配置。
-	Probe(ctx context.Context) error
 	Close() error
 }
 

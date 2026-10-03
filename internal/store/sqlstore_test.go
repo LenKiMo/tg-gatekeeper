@@ -78,34 +78,6 @@ func TestOpenCreatesMissingParentDirectory(t *testing.T) {
 	}
 }
 
-// TestGroupProbeLeavesNoResidue 是"自检把假群配置写进生产库"的回归测试。
-//
-// 早期 check-config 用 EnsureGroup(ctx, -1, …) 做读写检查，结果在生产库里留下一条
-// chat_id=-1 的假群配置。Probe 必须在事务里写入并回滚，一行都不留。
-func TestGroupProbeLeavesNoResidue(t *testing.T) {
-	h := testSQL(t)
-	ctx := context.Background()
-	groups := NewGroupStore(h)
-
-	if err := groups.Probe(ctx); err != nil {
-		t.Fatalf("探针失败: %v", err)
-	}
-	var n int
-	if err := h.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM groups").Scan(&n); err != nil {
-		t.Fatalf("统计 groups 失败: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("探针留下了 %d 行数据，期望 0 行", n)
-	}
-	if _, err := groups.GetGroup(ctx, probeChatID); !errors.Is(err, ports.ErrNotFound) {
-		t.Fatalf("探针行应当已被回滚，实际 err=%v", err)
-	}
-	// 可重复调用（不因残留而失败）。
-	if err := groups.Probe(ctx); err != nil {
-		t.Fatalf("第二次探针失败: %v", err)
-	}
-}
-
 // TestGroupStoreRevisionCAS 验证群配置的乐观并发（读-改-写冲突必须被发现）。
 func TestGroupStoreRevisionCAS(t *testing.T) {
 	ctx := context.Background()
@@ -495,34 +467,6 @@ func TestDeletionQueueLeaseAckNack(t *testing.T) {
 	}
 	if len(done) != 0 {
 		t.Fatalf("Ack 后不应再领取，实际 %d", len(done))
-	}
-}
-
-// TestYamlProbe 验证 YAML 自检可读写且不留下探针文件。
-func TestYamlProbe(t *testing.T) {
-	ctx := context.Background()
-	dir := tempDir(t)
-	cfg := config.Default()
-	cfg.Storage.YAML.Path = filepath.Join(dir, "groups.yaml")
-	cfg.Storage.YAML.RuntimeWrites = true
-
-	s, err := NewYAMLStore(cfg)
-	if err != nil {
-		t.Fatalf("构造 YAML 存储失败: %v", err)
-	}
-	if err := s.Probe(ctx); err != nil {
-		t.Fatalf("探针失败: %v", err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("读取目录失败: %v", err)
-	}
-	if len(entries) != 0 {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Fatalf("探针留下了文件: %v", names)
 	}
 }
 
