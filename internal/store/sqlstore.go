@@ -346,6 +346,38 @@ func (g *GroupStore) EnsureGroup(ctx context.Context, chatID int64, defaults dom
 	return g.GetGroup(ctx, chatID)
 }
 
+// probeChatID 是自检探针用的保留 chat_id。真实群/频道 id 不会是这个值
+// （超级群是 -100…，用户是正数），而且探针只存在于被回滚的事务里。
+const probeChatID = -987654321
+
+// Probe 实现 ports.Store：在事务里写入一条探针行、读回、然后回滚，验证存储可读写
+// 且不留下任何数据。早期版本用 EnsureGroup(ctx, -1, …) 做自检，会在生产库里留下一条
+// chat_id=-1 的假群配置。
+func (g *GroupStore) Probe(ctx context.Context) error {
+	tx, err := g.h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开启探针事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().Unix()
+	if _, err := tx.ExecContext(ctx, g.h.rebind(`
+		INSERT INTO groups (chat_id, enabled, mode, rules_message_id, welcome, tag, ad_words, revision, updated_at)
+		VALUES (?, 1, ?, 0, '', '', '', 1, ?)`),
+		probeChatID, string(domain.VerifyModeJoin), now); err != nil {
+		return fmt.Errorf("探针写入失败: %w", err)
+	}
+	var got int64
+	if err := tx.QueryRowContext(ctx,
+		g.h.rebind(`SELECT chat_id FROM groups WHERE chat_id = ?`), probeChatID).Scan(&got); err != nil {
+		return fmt.Errorf("探针读回失败: %w", err)
+	}
+	if got != probeChatID {
+		return fmt.Errorf("探针读回不一致: 写入 %d，读回 %d", probeChatID, got)
+	}
+	return nil // 不 Commit：探针行随回滚消失
+}
+
 // GetGroup 读取群配置。
 func (g *GroupStore) GetGroup(ctx context.Context, chatID int64) (domain.GroupConfig, error) {
 	row := g.h.db.QueryRowContext(ctx, g.h.rebind(`

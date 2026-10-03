@@ -226,11 +226,11 @@ func CheckConfig(ctx context.Context, cfg *config.Config) error {
 	checks = append(checks, fmt.Sprintf("存储可用（group=%s registry=%s deletion=%s）",
 		cfg.Storage.GroupStore, cfg.Storage.SessionRegistry, cfg.Storage.DeletionQueue))
 
-	groupCfg, err := stores.Groups.EnsureGroup(ctx, -1, defaultGroupForCheck(cfg))
-	if err != nil {
+	// 用 Probe 而不是 EnsureGroup(哨兵 chat_id)：后者会在生产库里留下一条假群配置。
+	if err := stores.Groups.Probe(ctx); err != nil {
 		return fmt.Errorf("群配置读写检查失败: %w", err)
 	}
-	checks = append(checks, fmt.Sprintf("群配置读写可用（revision=%d）", groupCfg.Revision))
+	checks = append(checks, "群配置读写可用（探针已回滚，不留数据）")
 
 	src, err := provider.New(cfg)
 	if err != nil {
@@ -280,21 +280,6 @@ func CheckConfig(ctx context.Context, cfg *config.Config) error {
 	checks = append(checks, fmt.Sprintf("图片管线可用（%s，%d 字节，重编码为 %s）",
 		ch.Entry.ImageRef, len(resolved.Bytes), resolved.Filename))
 	return nil
-}
-
-// defaultGroupForCheck 构造自检用的群配置默认值。
-func defaultGroupForCheck(cfg *config.Config) domain.GroupConfig {
-	mode := domain.VerifyMode(cfg.GroupDefaults.Mode)
-	if !mode.Valid() {
-		mode = domain.VerifyModeJoin
-	}
-	return domain.GroupConfig{
-		Enabled:        cfg.GroupDefaults.Enabled,
-		Mode:           mode,
-		Welcome:        cfg.GroupDefaults.Welcome,
-		RulesMessageID: cfg.GroupDefaults.RulesMessageID,
-		AdWords:        cfg.GroupDefaults.AdWords,
-	}
 }
 
 func challengeBuilder(snap domain.Snapshot) *challenge.Generator { return challenge.New(snap) }
