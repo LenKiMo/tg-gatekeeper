@@ -31,6 +31,16 @@ func (m *MemGroupStore) EnsureGroup(_ context.Context, chatID int64, defaults do
 	return defaults, nil
 }
 
+// Probe 实现 ports.Store：内存实现必然可读写，仅做一次写入+删除以保持语义一致。
+func (m *MemGroupStore) Probe(_ context.Context) error {
+	const probe int64 = -987654321
+	if _, ok := m.data[probe]; !ok {
+		m.data[probe] = domain.GroupConfig{ChatID: probe}
+	}
+	delete(m.data, probe)
+	return nil
+}
+
 // GetGroup 实现 ports.Store。
 func (m *MemGroupStore) GetGroup(_ context.Context, chatID int64) (domain.GroupConfig, error) {
 	cfg, ok := m.data[chatID]
