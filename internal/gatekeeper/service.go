@@ -180,7 +180,6 @@ func (s *Service) Group(ctx context.Context, chatID int64) (domain.GroupConfig, 
 		Mode:           domain.VerifyMode(s.cfg.GroupDefaults.Mode),
 		Welcome:        s.cfg.GroupDefaults.Welcome,
 		RulesMessageID: s.cfg.GroupDefaults.RulesMessageID,
-		RulesLink:      s.cfg.GroupDefaults.RulesLink,
 		AdWords:        s.cfg.GroupDefaults.AdWords,
 	}
 	if !defaults.Mode.Valid() {
