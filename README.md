@@ -5,7 +5,7 @@
 [![CI](https://github.com/LenKiMo/tg-gatekeeper/actions/workflows/ci.yml/badge.svg)](https://github.com/LenKiMo/tg-gatekeeper/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-69%20passing-brightgreen)](#-开发与测试)
+[![Tests](https://img.shields.io/badge/tests-73%20passing-brightgreen)](#-开发与测试)
 [![Deps](https://img.shields.io/badge/runtime%20deps-SQLite%20only-lightgrey)](#-架构)
 [![AI](https://img.shields.io/badge/AIGC-AI--assisted-blueviolet)](#-aigc-声明)
 
@@ -71,6 +71,9 @@ cp configs/gatekeeper.example.yaml configs/gatekeeper.yaml
 
 给机器人的**最小权限**：`删除消息` + `禁止成员`（=禁言/踢出）。若要用申请审批模式再加 `邀请用户`
 （Telegram 用它来投递入群申请）；`/tag` 功能另需 `管理标签`。
+
+> 机器人**必须是群管理员**：Telegram 只在机器人是管理员时才会把成员变动事件推给它。
+> 没有管理员身份时，题目永远不会发出。
 
 ## 📋 命令
 
@@ -175,6 +178,8 @@ internal/dataset         题库导入（MediaWiki / 任意 JSON）与图片下�
   `(chat_id, user_id, session_id, state, expires_at)` 并写终态与副作用 outbox，因此并发点击只有一个能赢；
   超时之后即使答对也不会放行（只有 timeout 能赢）。
 - **副作用 outbox**：终态与 Telegram 动作同事务落库，重启后继续执行；带重试退避与死信记录。
+- **入群事件的两条来源都订阅**：既处理 `new_chat_members` 服务消息，也显式订阅 Telegram 的
+  `chat_member` 状态跃迁——用户自己点邀请链接入群时**只有后者会送达**（机器人必须是管理员）。
 - **未验证发言拦截**：没通过验证就发言会被立刻处置（删消息 + 移出），该拦截挂在路由第一优先级。
 - **分派器**：入群/申请/回调/发言走 critical 通道（有界背压，**不丢**）；命令走 command 通道（满载回"繁忙"）；
   同一用户/群严格 FIFO。
@@ -205,13 +210,15 @@ docker compose up -d
 ```bash
 go build ./...
 go vet ./...
-go test ./...                       # 69 个用例
+go test ./...                       # 73 个用例
 go test ./internal/store/... -run TestClaimOnlyOneWinnerConcurrent -v   # 并发正确性
 ```
 
 测试覆盖：抽题公平性与唯一性、别名排除、题库不足策略、并发 Claim（64 goroutine 只有一个赢）、
 重启恢复、删除队列租约、分派器 FIFO 与背压、MarkdownV2 转义、callback 编解码、
-广告词全角/零宽/分隔符绕过、图片路径穿越与 SSRF、12 个完整流程（入群/申请/答对/答错/超时/发言/管理员操作）。
+广告词全角/零宽/分隔符绕过、图片路径穿越与 SSRF、入群信号识别（无发送者的服务消息、
+`chat_member` 状态跃迁、重启后的积压更新过滤、重复入群信号去重）、
+12 个完整流程（入群/申请/答对/答错/超时/发言/管理员操作）。
 
 ## 🙏 参考与致谢
 

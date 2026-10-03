@@ -163,6 +163,25 @@ func (b *deadlineBody) Close() error {
 // Bot 返回底层库句柄（router 注册处理器需要）。
 func (c *Client) Bot() *tgbotapi.BotAPI { return c.api }
 
+// UpdatesChan 返回订阅了必要更新类型的更新通道。
+//
+// 必须显式订阅 chat_member：Telegram 默认不推送这一类型，而"用户自己点邀请链接入群"
+// 只会以 chat_member（成员状态 left→member）的形式送达，不会产生 new_chat_members
+// 消息。漏订阅的表现就是"有人入群、机器人毫无反应"，且没有任何错误日志可查。
+func (c *Client) UpdatesChan(timeoutSeconds int) tgbotapi.UpdatesChannel {
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = timeoutSeconds
+	u.AllowedUpdates = []string{
+		"message",
+		"edited_message",
+		"callback_query",
+		"chat_join_request",
+		"chat_member",
+		"my_chat_member",
+	}
+	return c.api.GetUpdatesChan(u)
+}
+
 // Self 实现 ports.Telegram。
 func (c *Client) Self() (int64, string) { return c.self.ID, c.self.UserName }
 

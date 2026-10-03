@@ -3,11 +3,13 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -137,6 +139,10 @@ func (a *App) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// 退出信号与"更新循环意外退出"两条路径都会走到清理，只允许执行一次。
+	var shutdownOnce sync.Once
+	doShutdown := func() { shutdownOnce.Do(a.shutdown) }
+
 	// 客户端库的 Run() 没有停止接口：退出靠取消 ctx + 进程返回。
 	go func() {
 		select {
@@ -144,20 +150,30 @@ func (a *App) Run(ctx context.Context) error {
 			a.log.Info("收到退出信号，开始优雅停止", "signal", sig.String())
 		case <-runCtx.Done():
 		}
-		a.shutdown()
+		doShutdown()
 	}()
 
+	// 更新循环退出 = 之后再也不会收到任何更新。必须让进程退出并由 systemd 拉起：
+	// 否则进程会"活着但完全聋"，且没有任何日志——真实事故里因此静默漏掉 6 小时的全部入群。
+	loopDone := make(chan struct{})
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				a.log.Error("更新循环 panic", "panic", fmt.Sprint(r))
 			}
+			close(loopDone)
 		}()
 		a.router.Run()
 	}()
 
-	<-runCtx.Done()
-	return nil
+	select {
+	case <-runCtx.Done():
+		return nil
+	case <-loopDone:
+		a.log.Error("更新循环已退出，进程退出以便被重新拉起")
+		doShutdown()
+		return errors.New("更新循环意外退出")
+	}
 }
 
 // shutdown 执行有序退出：先停止接收新任务，再排空在途任务，最后关资源。

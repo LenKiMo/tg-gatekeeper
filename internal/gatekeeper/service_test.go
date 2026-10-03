@@ -245,6 +245,33 @@ func runBackground(t *testing.T, svc *Service) {
 
 // ---------------------------------------------------------------- 测试
 
+// TestDuplicateJoinSignalDoesNotSendSecondChallenge 是生产事故的第二道回归。
+//
+// 入群信号有两条通道（new_chat_members 服务消息 + chat_member 状态跃迁），Telegram 可能
+// 两条都发。同一用户第二次信号必须被忽略：否则会同时挂两道题，旧题没人清理。
+func TestDuplicateJoinSignalDoesNotSendSecondChallenge(t *testing.T) {
+	svc, api, registry, _ := testService(t, nil)
+	ctx := context.Background()
+	members := []Member{{UserID: 7, DisplayName: "新人"}}
+
+	if err := svc.OnMembersJoined(ctx, -100, 1, members); err != nil {
+		t.Fatalf("第一次入群失败: %v", err)
+	}
+	if err := svc.OnMembersJoined(ctx, -100, 2, members); err != nil {
+		t.Fatalf("第二次入群信号应被忽略而不是报错: %v", err)
+	}
+	if len(api.challenges) != 1 {
+		t.Fatalf("同一用户只应出 1 道题，实际 %d", len(api.challenges))
+	}
+	sess, err := registry.Get(ctx, domain.SessionKey{ChatID: -100, UserID: 7})
+	if err != nil {
+		t.Fatalf("会话应当仍在: %v", err)
+	}
+	if sess.UpdateID != 1 {
+		t.Fatalf("会话不应被第二条信号替换，update_id = %d", sess.UpdateID)
+	}
+}
+
 // TestJoinFlowRestrictsAndSendsChallenge 验证入群后先禁言再出题，并登记会话。
 func TestJoinFlowRestrictsAndSendsChallenge(t *testing.T) {
 	svc, api, registry, _ := testService(t, nil)

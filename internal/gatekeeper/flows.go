@@ -328,6 +328,20 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 		fn(&o)
 	}
 
+	// 同一个入群事件可能从两条通道到达（new_chat_members 服务消息 + chat_member 状态跃迁），
+	// 同一用户已有进行中的会话时不再重复出题；否则会出现两道并存的题、旧题无人清理。
+	// 分派器对同一群/用户是严格 FIFO，因此这里"先查后建"不会与并发出题打架。
+	if cur, err := s.registry.Get(ctx, domain.SessionKey{ChatID: group.ChatID, UserID: userID}); err == nil {
+		if !cur.State.Terminal() {
+			s.audit(ctx, ports.AuditEvent{
+				Event: "verify.duplicate_signal", ChatID: group.ChatID, UserID: userID,
+				DisplayName: displayName, Mode: string(group.Mode),
+				Result: "ignored", NewState: string(cur.State),
+			})
+			return domain.Session{}, nil
+		}
+	}
+
 	gen := s.Generator()
 	if gen == nil {
 		return domain.Session{}, errors.New("题库尚未加载")
