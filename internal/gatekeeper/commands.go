@@ -124,7 +124,7 @@ func (s *Service) HandleCommand(ctx context.Context, chatID, userID int64, displ
 	case "/welcome":
 		return s.cmdWelcome(ctx, chatID, userID, text)
 	case "/reg":
-		return s.cmdReg(ctx, chatID, userID, msgRef)
+		return s.cmdReg(ctx, chatID, userID, text, msgRef)
 	case "/tag":
 		return s.cmdTag(ctx, chatID, userID, text)
 	case "/reload":
@@ -215,7 +215,8 @@ func (s *Service) cmdWelcome(ctx context.Context, chatID, userID int64, text str
 		group.Welcome = ""
 	default:
 		if body == "" {
-			return s.replyTemp(ctx, chatID, userID, "用法：/welcome 欢迎语（支持 {mention} 提及新成员；/welcome clear 清空）")
+			return s.replyTemp(ctx, chatID, userID,
+				"用法：/welcome 欢迎语（支持 {mention} 提及新成员、{rules} 群规链接；/welcome clear 清空）")
 		}
 		group.Welcome = body
 	}
@@ -226,7 +227,11 @@ func (s *Service) cmdWelcome(ctx context.Context, chatID, userID int64, text str
 	return s.replyTemp(ctx, chatID, userID, "欢迎语已更新（验证通过后发送）。")
 }
 
-func (s *Service) cmdReg(ctx context.Context, chatID, userID int64, msgRef domain.MessageRef) error {
+// cmdReg 设置群规来源，三种用法：
+//   - /reg <http(s) 链接>：显式链接（推荐，公群可以直接给 t.me/<群名>/<消息ID> 这种好看的链接）
+//   - /reg（回复一条消息）：记录该消息 ID，欢迎语里的 {rules} 会推导成 t.me/c/<内部ID>/<消息ID>
+//   - /reg clear：清空
+func (s *Service) cmdReg(ctx context.Context, chatID, userID int64, text string, msgRef domain.MessageRef) error {
 	ok, err := s.requireAdmin(ctx, chatID, userID)
 	if err != nil || !ok {
 		return s.replyTemp(ctx, chatID, userID, "只有管理员可以设置群规。")
@@ -235,15 +240,25 @@ func (s *Service) cmdReg(ctx context.Context, chatID, userID int64, msgRef domai
 	if err != nil {
 		return err
 	}
-	if msgRef.MessageID == 0 {
-		return s.replyTemp(ctx, chatID, userID, "请回复一条消息后使用 /reg 把它设为群规。")
+	arg := strings.TrimSpace(strings.TrimPrefix(text, "/reg"))
+	switch {
+	case arg == "clear":
+		group.RulesLink = ""
+		group.RulesMessageID = 0
+	case strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://"):
+		group.RulesLink = arg
+	case arg == "" && msgRef.MessageID != 0:
+		group.RulesMessageID = msgRef.MessageID
+		group.RulesLink = ""
+	default:
+		return s.replyTemp(ctx, chatID, userID,
+			"用法：/reg <群规链接>，或回复一条消息用 /reg 把它设为群规；/reg clear 清空。")
 	}
-	group.RulesMessageID = msgRef.MessageID
 	if err := s.SaveGroup(ctx, group); err != nil {
 		return s.replyTemp(ctx, chatID, userID, "保存失败："+err.Error())
 	}
 	s.audit(ctx, ports.AuditEvent{Event: "command.reg", ChatID: chatID, UserID: userID, Result: "ok"})
-	return s.replyTemp(ctx, chatID, userID, "群规已更新。")
+	return s.replyTemp(ctx, chatID, userID, "群规已更新（欢迎语里的 {rules} 会替换成这条链接）。")
 }
 
 func (s *Service) cmdTag(ctx context.Context, chatID, userID int64, text string) error {
@@ -290,8 +305,8 @@ func helpText(cfg *config.Config) string {
 		"· /help 查看帮助",
 		"管理员：",
 		"· /request_mode [join|request] 切换验证模式",
-		"· /welcome 欢迎语（支持 {mention}；clear 清空）",
-		"· /reg 回复一条消息把它设为群规",
+		"· /welcome 欢迎语（支持 {mention} 提及、{rules} 群规链接；clear 清空）",
+		"· /reg <链接> 设置群规链接（或回复一条消息用 /reg 把它设为群规）",
 		"· /tag 验证通过后自动设置的成员标签（clear 清空）",
 	}, "\n")
 }

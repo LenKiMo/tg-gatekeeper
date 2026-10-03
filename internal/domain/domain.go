@@ -76,7 +76,10 @@ type GroupConfig struct {
 	Enabled        bool
 	Mode           VerifyMode
 	RulesMessageID int64
-	Welcome        string
+	// RulesLink 是群规的显式链接（运营用 /reg <url> 设置，任意 URL）。
+	// 设置后 {rules} 占位符用它；为空则用 RulesMessageID 生成 t.me/c 链接。
+	RulesLink string
+	Welcome   string
 	// Tag 是验证通过后给成员打的标签（Telegram 的 tag 功能），空表示不打。
 	Tag     string
 	AdWords []string
@@ -154,6 +157,10 @@ type Session struct {
 	UpdateID int // 触发本会话的 Telegram update id，用于幂等
 	Mode     SessionMode
 	State    SessionState
+	// DisplayName 是入群时新成员的昵称：欢迎语里的 {mention} 必须用它，
+	// 否则只能退化成"新成员"这种占位文字（欢迎语在答题通过时才发，那时
+	// 事件里只有点击者/管理员的信息，拿不到新成员本人）。
+	DisplayName string
 	// CorrectTokenHash 是正确答案 token 的 sha256，不存明文标签。
 	CorrectTokenHash []byte
 	Options          []Option

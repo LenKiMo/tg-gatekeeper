@@ -4,8 +4,56 @@ import (
 	"strings"
 	"testing"
 
+	tgbotapi "github.com/ijnkawakaze/telegram-bot-api"
+
 	"github.com/LenKiMo/tg-gatekeeper/internal/domain"
 )
+
+// TestTextWithLinks 验证从实体还原链接：客户端会把 [文字](url) 变成 text_link 实体，
+// 只取 Message.Text 会丢掉 URL（真实踩过：欢迎语里的群规链接变成光秃秃的"点击阅读"）。
+func TestTextWithLinks(t *testing.T) {
+	plain := &tgbotapi.Message{Text: "欢迎{mention}"}
+	if got := TextWithLinks(plain); got != "欢迎{mention}" {
+		t.Fatalf("无实体时应原样返回，实际 %q", got)
+	}
+	msg := &tgbotapi.Message{
+		Text: "建议阅读群公约：点击阅读",
+		Entities: []tgbotapi.MessageEntity{{
+			// 偏移以 UTF-16 码元计："建议阅读群公约："占 8 个码元，链接文字从 8 开始。
+			Type: "text_link", Offset: 8, Length: 4, URL: "https://t.me/ArknightsEndfieldCN/37057",
+		}},
+	}
+	want := "建议阅读群公约：[点击阅读](https://t.me/ArknightsEndfieldCN/37057)"
+	if got := TextWithLinks(msg); got != want {
+		t.Fatalf("链接还原失败：\n got %q\nwant %q", got, want)
+	}
+	// emoji 超出 BMP、占 2 个 UTF-16 码元，偏移必须换算正确。
+	msg2 := &tgbotapi.Message{
+		Text: "🌙群规：点击阅读",
+		Entities: []tgbotapi.MessageEntity{{
+			Type: "text_link", Offset: 5, Length: 4, URL: "https://t.me/x/1",
+		}},
+	}
+	want2 := "🌙群规：[点击阅读](https://t.me/x/1)"
+	if got := TextWithLinks(msg2); got != want2 {
+		t.Fatalf("emoji 偏移换算失败：\n got %q\nwant %q", got, want2)
+	}
+}
+
+// TestRenderCaptionRulesPlaceholder 验证 {rules} 渲染成可点击的 MarkdownV2 链接。
+func TestRenderCaptionRulesPlaceholder(t *testing.T) {
+	got := RenderCaption("欢迎{mention}\n建议阅读群公约：{rules}", 7, "漠伦",
+		60, "https://t.me/ArknightsEndfieldCN/37057")
+	if !strings.Contains(got, "[漠伦](tg://user?id=7)") {
+		t.Fatalf("提及未渲染：%q", got)
+	}
+	if !strings.Contains(got, "[点击阅读](https://t.me/ArknightsEndfieldCN/37057)") {
+		t.Fatalf("群规链接未渲染：%q", got)
+	}
+	if got := RenderCaption("欢迎{mention}{rules}", 7, "漠伦", 60, ""); strings.Contains(got, "{rules}") {
+		t.Fatalf("无链接时不应保留占位符：%q", got)
+	}
+}
 
 // TestCallbackRoundTrip 验证按钮数据的编解码。
 func TestCallbackRoundTrip(t *testing.T) {
@@ -88,7 +136,7 @@ func TestEscapeMarkdownV2(t *testing.T) {
 
 // TestRenderCaptionEscapesUserInput 验证把昵称塞进模板后仍然安全。
 func TestRenderCaptionEscapesUserInput(t *testing.T) {
-	got := RenderCaption("欢迎 {mention}，请在 {timeout} 秒内作答。", 12345, "a.b_c", 60)
+	got := RenderCaption("欢迎 {mention}，请在 {timeout} 秒内作答。", 12345, "a.b_c", 60, "")
 	if !strings.Contains(got, "[a\\.b\\_c](tg://user?id=12345)") {
 		t.Fatalf("提及未正确转义: %q", got)
 	}
@@ -96,7 +144,7 @@ func TestRenderCaptionEscapesUserInput(t *testing.T) {
 		t.Fatalf("超时未替换: %q", got)
 	}
 	// 未知占位保持原样，方便运维发现拼错。
-	unknown := RenderCaption("hi {nope}", 1, "x", 5)
+	unknown := RenderCaption("hi {nope}", 1, "x", 5, "")
 	if !strings.Contains(unknown, "{nope}") {
 		t.Fatalf("未知占位应原样保留: %q", unknown)
 	}

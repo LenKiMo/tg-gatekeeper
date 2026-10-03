@@ -29,8 +29,13 @@ runtime:
 group_defaults:
   enabled: true
   mode: join                       # join（自行入群验证）| request（入群申请审批）
-  welcome: "欢迎 {mention} 加入本群，请先完成验证。"
+  # 欢迎语（验证通过后发送）。占位符：{mention} 提及本人、{rules} 群规链接、
+  # {name} 纯昵称、{timeout} 超时秒数、{id} 用户 ID。
+  # 群规链接由 /reg <链接> 或 /reg（回复一条消息）设置；模板里写了 {rules}
+  # 就不会再自动追加一条"群规：<链接>"。
+  welcome: "欢迎{mention}\n建议阅读群公约：{rules}"
   rules_message_id: 0
+  rules_link: ""                   # 也可在这里直接写死群规链接（优先于 rules_message_id）
   ad_words: []
 
 commands:
@@ -72,7 +77,7 @@ gatekeeper:
   answer_wrong_alert: true
   stale_callback_alert: true
   button_columns: 2
-  caption_join: "欢迎 {mention}，请在 {timeout} 秒内选择与上图对应的名称。"
+  caption_join: "请在 {timeout} 秒内选择与上图对应的名称。"   # 只讲题目：欢迎语另有单独一条
   caption_request: "请在 {timeout} 秒内选择与上图对应的名称。"
   admin_card_text: "用户 {mention} 正在进行验证，可通过下方按钮放行或封禁。"
   difficulty:

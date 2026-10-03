@@ -347,7 +347,9 @@ func (r *Router) handleMessage(u tgbotapi.Update) error {
 	}
 
 	// 待验证发言拦截：同步查一次会话（本地索引查询），保证它排在命令处理之前。
-	text := strings.TrimSpace(m.Text)
+	// 用 TextWithLinks：命令参数里若带链接（如 /welcome 欢迎[点击阅读](url)），
+	// 客户端把它变成了实体，直接取 Text 会把 URL 丢掉。
+	text := strings.TrimSpace(telegram.TextWithLinks(m))
 	isCommand := m.IsCommand()
 	if !isCommand {
 		if pending, err := r.svc.HasPendingSession(context.Background(), chatID, userID); err == nil && pending {

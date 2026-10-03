@@ -33,6 +33,7 @@ var schemas = map[string][]string{
 			enabled INTEGER NOT NULL DEFAULT 1,
 			mode TEXT NOT NULL DEFAULT 'join',
 			rules_message_id INTEGER NOT NULL DEFAULT 0,
+			rules_link TEXT NOT NULL DEFAULT '',
 			welcome TEXT NOT NULL DEFAULT '',
 			tag TEXT NOT NULL DEFAULT '',
 			ad_words TEXT NOT NULL DEFAULT '',
@@ -46,6 +47,7 @@ var schemas = map[string][]string{
 			update_id INTEGER NOT NULL DEFAULT 0,
 			mode TEXT NOT NULL,
 			state TEXT NOT NULL,
+			display_name TEXT NOT NULL DEFAULT '',
 			options_json TEXT NOT NULL DEFAULT '',
 			correct_hash BLOB NOT NULL,
 			dataset_revision TEXT NOT NULL DEFAULT '',
@@ -94,7 +96,8 @@ var schemas = map[string][]string{
 			enabled TINYINT NOT NULL DEFAULT 1,
 			mode VARCHAR(16) NOT NULL DEFAULT 'join',
 			rules_message_id BIGINT NOT NULL DEFAULT 0,
-			welcome TEXT NOT NULL,
+			rules_link VARCHAR(255) NOT NULL DEFAULT '',
+			welcome MEDIUMTEXT NOT NULL,
 			tag VARCHAR(255) NOT NULL DEFAULT '',
 			ad_words TEXT NOT NULL,
 			revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
@@ -107,6 +110,7 @@ var schemas = map[string][]string{
 			update_id BIGINT NOT NULL DEFAULT 0,
 			mode VARCHAR(16) NOT NULL,
 			state VARCHAR(16) NOT NULL,
+			display_name VARCHAR(128) NOT NULL DEFAULT '',
 			options_json MEDIUMTEXT NOT NULL,
 			correct_hash VARBINARY(32) NOT NULL,
 			dataset_revision VARCHAR(64) NOT NULL DEFAULT '',
@@ -263,6 +267,34 @@ func openMySQL(ctx context.Context, cfg *config.Config) (*SQL, error) {
 	return h, nil
 }
 
+// ensureColumns 给已存在的老库补列（CREATE TABLE IF NOT EXISTS 不会修改已有表）。
+// 列已存在时报 "duplicate column" 直接忽略，因此可以重复执行。
+func (s *SQL) ensureColumns(ctx context.Context) error {
+	str := "TEXT"
+	if s.dialect == "mysql" {
+		str = "VARCHAR(255)"
+	}
+	alters := []struct{ stmt, what string }{
+		{"ALTER TABLE sessions ADD COLUMN display_name " + str + " NOT NULL DEFAULT ''", "sessions.display_name"},
+		{"ALTER TABLE groups ADD COLUMN rules_link " + str + " NOT NULL DEFAULT ''", "groups.rules_link"},
+	}
+	for _, a := range alters {
+		if _, err := s.db.ExecContext(ctx, a.stmt); err != nil && !isDuplicateColumnErr(err) {
+			return fmt.Errorf("补列 %s 失败: %w", a.what, err)
+		}
+	}
+	return nil
+}
+
+// isDuplicateColumnErr 判断"列已存在"错误（SQLite: duplicate column name；MySQL: 1060）。
+func isDuplicateColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate column") || strings.Contains(msg, "error 1060")
+}
+
 func (s *SQL) ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -282,6 +314,9 @@ func (s *SQL) Migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("建表失败 (%s): %w", firstLine(stmt), err)
 		}
+	}
+	if err := s.ensureColumns(ctx); err != nil {
+		return err
 	}
 	_, err := s.db.ExecContext(ctx,
 		s.rebind(`INSERT INTO meta (k, v) VALUES (?, ?)`), "schema_version", "1")
@@ -333,10 +368,10 @@ func (g *GroupStore) EnsureGroup(ctx context.Context, chatID int64, defaults dom
 	}
 	now := time.Now().Unix()
 	_, err = g.h.db.ExecContext(ctx, g.h.rebind(`
-		INSERT INTO groups (chat_id, enabled, mode, rules_message_id, welcome, tag, ad_words, revision, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`),
+		INSERT INTO groups (chat_id, enabled, mode, rules_message_id, rules_link, welcome, tag, ad_words, revision, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`),
 		chatID, boolToInt(defaults.Enabled), string(defaults.Mode), defaults.RulesMessageID,
-		defaults.Welcome, defaults.Tag, strings.Join(defaults.AdWords, "\n"), now)
+		defaults.RulesLink, defaults.Welcome, defaults.Tag, strings.Join(defaults.AdWords, "\n"), now)
 	if err != nil {
 		if isDuplicateErr(err) {
 			return g.GetGroup(ctx, chatID)
@@ -381,7 +416,7 @@ func (g *GroupStore) Probe(ctx context.Context) error {
 // GetGroup 读取群配置。
 func (g *GroupStore) GetGroup(ctx context.Context, chatID int64) (domain.GroupConfig, error) {
 	row := g.h.db.QueryRowContext(ctx, g.h.rebind(`
-		SELECT chat_id, enabled, mode, rules_message_id, welcome, tag, ad_words, revision, updated_at
+		SELECT chat_id, enabled, mode, rules_message_id, rules_link, welcome, tag, ad_words, revision, updated_at
 		FROM groups WHERE chat_id = ?`), chatID)
 	return scanGroup(row.Scan)
 }
@@ -391,9 +426,9 @@ func (g *GroupStore) SaveGroup(ctx context.Context, cfg domain.GroupConfig, expe
 	now := time.Now().Unix()
 	if expectedRevision == 0 {
 		_, err := g.h.db.ExecContext(ctx, g.h.rebind(`
-			INSERT INTO groups (chat_id, enabled, mode, rules_message_id, welcome, tag, ad_words, revision, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`),
-			cfg.ChatID, boolToInt(cfg.Enabled), string(cfg.Mode), cfg.RulesMessageID,
+			INSERT INTO groups (chat_id, enabled, mode, rules_message_id, rules_link, welcome, tag, ad_words, revision, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`),
+			cfg.ChatID, boolToInt(cfg.Enabled), string(cfg.Mode), cfg.RulesMessageID, cfg.RulesLink,
 			cfg.Welcome, cfg.Tag, strings.Join(cfg.AdWords, "\n"), now)
 		if err != nil {
 			if isDuplicateErr(err) {
@@ -404,10 +439,10 @@ func (g *GroupStore) SaveGroup(ctx context.Context, cfg domain.GroupConfig, expe
 		return g.GetGroup(ctx, cfg.ChatID)
 	}
 	res, err := g.h.db.ExecContext(ctx, g.h.rebind(`
-		UPDATE groups SET enabled = ?, mode = ?, rules_message_id = ?, welcome = ?, tag = ?, ad_words = ?,
+		UPDATE groups SET enabled = ?, mode = ?, rules_message_id = ?, rules_link = ?, welcome = ?, tag = ?, ad_words = ?,
 			revision = revision + 1, updated_at = ?
 		WHERE chat_id = ? AND revision = ?`),
-		boolToInt(cfg.Enabled), string(cfg.Mode), cfg.RulesMessageID, cfg.Welcome, cfg.Tag,
+		boolToInt(cfg.Enabled), string(cfg.Mode), cfg.RulesMessageID, cfg.RulesLink, cfg.Welcome, cfg.Tag,
 		strings.Join(cfg.AdWords, "\n"), now, cfg.ChatID, expectedRevision)
 	if err != nil {
 		return domain.GroupConfig{}, fmt.Errorf("更新群配置失败: %w", err)
@@ -433,7 +468,7 @@ func scanGroup(scan func(...any) error) (domain.GroupConfig, error) {
 		adWords string
 		updated int64
 	)
-	if err := scan(&cfg.ChatID, &enabled, &mode, &cfg.RulesMessageID, &cfg.Welcome, &cfg.Tag, &adWords, &cfg.Revision, &updated); err != nil {
+	if err := scan(&cfg.ChatID, &enabled, &mode, &cfg.RulesMessageID, &cfg.RulesLink, &cfg.Welcome, &cfg.Tag, &adWords, &cfg.Revision, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.GroupConfig{}, ports.ErrNotFound
 		}
@@ -471,7 +506,7 @@ type Registry struct{ h *SQL }
 // NewRegistry 构造会话注册表。
 func NewRegistry(h *SQL) *Registry { return &Registry{h: h} }
 
-const sessionCols = `id, chat_id, user_id, update_id, mode, state, options_json, correct_hash,
+const sessionCols = `id, chat_id, user_id, update_id, mode, state, display_name, options_json, correct_hash,
 	dataset_revision, challenge_chat_id, challenge_message_id, admin_chat_id, admin_message_id,
 	join_chat_id, join_message_id, request_user_chat_id, started_at, expires_at, version`
 
@@ -510,8 +545,8 @@ func (r *Registry) Begin(ctx context.Context, s domain.Session) (ports.BeginResu
 	now := time.Now().Unix()
 	if _, err := tx.ExecContext(ctx, r.h.rebind(`
 		INSERT INTO sessions (`+sessionCols+`, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`),
-		s.ID, s.Key.ChatID, s.Key.UserID, s.UpdateID, string(s.Mode), string(s.State),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`),
+		s.ID, s.Key.ChatID, s.Key.UserID, s.UpdateID, string(s.Mode), string(s.State), s.DisplayName,
 		string(options), s.CorrectTokenHash, s.DatasetRevision,
 		s.ChallengeMessage.ChatID, s.ChallengeMessage.MessageID,
 		s.AdminMessage.ChatID, s.AdminMessage.MessageID,
@@ -816,7 +851,7 @@ func scanSession(scan func(...any) error) (domain.Session, error) {
 		chHash    []byte
 		rowChatID int64
 	)
-	err := scan(&s.ID, &rowChatID, &s.Key.UserID, &s.UpdateID, &mode, &state, &options, &chHash,
+	err := scan(&s.ID, &rowChatID, &s.Key.UserID, &s.UpdateID, &mode, &state, &s.DisplayName, &options, &chHash,
 		&s.DatasetRevision, &s.ChallengeMessage.ChatID, &s.ChallengeMessage.MessageID,
 		&s.AdminMessage.ChatID, &s.AdminMessage.MessageID,
 		&s.JoinMessage.ChatID, &s.JoinMessage.MessageID,

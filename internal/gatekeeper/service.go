@@ -260,10 +260,15 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 			if group.Welcome == "" && group.RulesMessageID == 0 {
 				return
 			}
-			text := telegram.RenderCaption(group.Welcome, before.Key.UserID, "", cfg.Gatekeeper.TimeoutSeconds)
-			if group.RulesMessageID > 0 {
-				link := fmt.Sprintf("https://t.me/c/%s/%d", chatPathID(before.Key.ChatID), group.RulesMessageID)
-				text = strings.TrimSpace(text + "\n" + telegram.EscapeMarkdownV2("群规：") + link)
+			// 昵称取会话里记录的入群昵称：此刻事件里的 actor 是"点击按钮的人"或"管理员"，
+			// 都不能用来当新成员的名字（否则 {mention} 会退化成"新成员"）。
+			text := telegram.RenderCaption(group.Welcome, before.Key.UserID, before.DisplayName,
+				cfg.Gatekeeper.TimeoutSeconds, groupRulesLink(group, before.Key.ChatID))
+			// 模板已经自己给了链接（{rules} 占位或手写 t.me 链接）就不再追加，避免两条链接。
+			if link := groupRulesLink(group, before.Key.ChatID); link != "" &&
+				!strings.Contains(group.Welcome, "{rules}") && !strings.Contains(group.Welcome, "t.me/") {
+				text = strings.TrimSpace(text + "\n" + telegram.EscapeMarkdownV2("群规：") +
+					"[" + telegram.EscapeMarkdownV2("点击阅读") + "](" + link + ")")
 			}
 			add(domain.EffectWelcome, domain.EffectPayload{
 				"chat_id":      itoa(before.Key.ChatID),
@@ -354,6 +359,26 @@ func withText(base domain.EffectPayload, extra map[string]string) domain.EffectP
 		out[k] = v
 	}
 	return out
+}
+
+// groupRulesLink 解析群规链接：运营用 /reg <url> 设的显式链接优先，其次由群规消息 ID 推导。
+func groupRulesLink(group domain.GroupConfig, chatID int64) string {
+	if group.RulesLink != "" {
+		return group.RulesLink
+	}
+	if group.RulesMessageID > 0 {
+		return rulesLink(chatID, group.RulesMessageID)
+	}
+	return ""
+}
+
+// rulesLink 生成群规消息的 MarkdownV2 链接。
+//
+// 用 t.me/c/<内部ID>/<消息ID>：公群也能拼 t.me/<username>/<id>，但机器人要额外 getChat
+// 才拿得到 username；运营想让链接更好看，直接在欢迎语模板里写完整 URL 即可（模板里
+// 出现 t.me/ 时不再追加这条）。
+func rulesLink(chatID, messageID int64) string {
+	return fmt.Sprintf("https://t.me/c/%s/%d", chatPathID(chatID), messageID)
 }
 
 // chatPathID 把 -100xxxxxxxxxx 转成 t.me/c 链接里用的短 id。

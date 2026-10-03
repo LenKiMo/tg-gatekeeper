@@ -363,6 +363,7 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 		UpdateID:          updateID,
 		Mode:              mode,
 		State:             domain.StatePreparing,
+		DisplayName:       displayName,
 		Options:           ch.Options,
 		CorrectTokenHash:  ch.CorrectTokenHash,
 		DatasetRevision:   ch.Revision,
@@ -410,7 +411,7 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 		target = o.userChatID
 		captionTemplate = s.cfg.Gatekeeper.CaptionRequest
 	}
-	caption := telegram.RenderCaption(captionTemplate, userID, displayName, s.cfg.Gatekeeper.TimeoutSeconds)
+	caption := telegram.RenderCaption(captionTemplate, userID, displayName, s.cfg.Gatekeeper.TimeoutSeconds, "")
 	buttons := telegram.OptionKeyboard(ch.Options, s.cfg.Gatekeeper.ButtonColumns, session.ID)
 
 	ref, err := s.api.SendChallenge(ctx, target, built.Image, caption, buttons)
@@ -442,7 +443,7 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 
 	// 申请模式：额外在群里发一张管理员处置卡片。
 	if mode == domain.SessionRequest {
-		text := telegram.RenderCaption(s.cfg.Gatekeeper.AdminCardText, userID, displayName, s.cfg.Gatekeeper.TimeoutSeconds)
+		text := telegram.RenderCaption(s.cfg.Gatekeeper.AdminCardText, userID, displayName, s.cfg.Gatekeeper.TimeoutSeconds, "")
 		cardRef, err := s.api.SendText(ctx, group.ChatID, text, true, telegram.AdminKeyboard(session.ID))
 		if err == nil && cardRef.Valid() {
 			if upd, aerr := s.registry.AttachMessages(ctx, session.Key, session.ID, ref, cardRef,

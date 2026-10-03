@@ -36,21 +36,37 @@ func Mention(userID int64, displayName string) string {
 	return "[" + EscapeMarkdownV2(name) + "](tg://user?id=" + strconv.FormatInt(userID, 10) + ")"
 }
 
-// RenderCaption 把模板里的 {mention}/{timeout}/用户昵称占位替换为已转义文本。
+// RenderCaption 把模板里的占位符替换为已转义文本。
 //
-// 支持 {mention}、{name}、{timeout}、{id}；未知占位原样保留（便于运营发现拼错）。
-func RenderCaption(template string, userID int64, displayName string, timeoutSeconds int) string {
+// 支持 {mention}、{name}、{timeout}、{id}、{rules}；未知占位原样保留（便于运营发现拼错）。
+//
+// {rules} 渲染成一条 MarkdownV2 链接（链接文字"点击阅读"）。**不要**在模板里手写
+// `[文字](url)`：运营在客户端里打字时，客户端会把它变成 text_link 实体，机器人收到的
+// Message.Text 里只剩可见文字、链接只存在于 Entities 里——所以链接必须由机器人拼。
+func RenderCaption(template string, userID int64, displayName string, timeoutSeconds int, rulesLink string) string {
 	if template == "" {
 		return ""
 	}
 	name := strings.TrimSpace(displayName)
+	rules := ""
+	if rulesLink != "" {
+		rules = "[" + EscapeMarkdownV2("点击阅读") + "](" + escapeLinkURL(rulesLink) + ")"
+	}
 	replacer := strings.NewReplacer(
 		"{mention}", Mention(userID, name),
 		"{name}", EscapeMarkdownV2(name),
 		"{timeout}", strconv.Itoa(timeoutSeconds),
 		"{id}", strconv.FormatInt(userID, 10),
+		"{rules}", rules,
 	)
 	return replacer.Replace(template)
+}
+
+// escapeLinkURL 只转义 MarkdownV2 链接目标里必须转义的字符（')' 与 '\\'）。
+// 其余字符（. / : - _ 等）在链接目标内是合法的，多转义反而会让 URL 变样。
+func escapeLinkURL(u string) string {
+	u = strings.ReplaceAll(u, "\\", "\\\\")
+	return strings.ReplaceAll(u, ")", "\\)")
 }
 
 // OptionKeyboard 把选项按列数切成按钮表。

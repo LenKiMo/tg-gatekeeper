@@ -27,6 +27,7 @@ type yamlGroup struct {
 	Enabled        bool     `yaml:"enabled"`
 	Mode           string   `yaml:"mode"`
 	RulesMessageID int64    `yaml:"rules_message_id"`
+	RulesLink      string   `yaml:"rules_link"`
 	Welcome        string   `yaml:"welcome"`
 	Tag            string   `yaml:"tag"`
 	AdWords        []string `yaml:"ad_words"`
@@ -82,6 +83,7 @@ func NewYAMLStore(cfg *config.Config) (*YAMLStore, error) {
 			Enabled:        g.Enabled,
 			Mode:           mode,
 			RulesMessageID: g.RulesMessageID,
+			RulesLink:      g.RulesLink,
 			Welcome:        g.Welcome,
 			Tag:            g.Tag,
 			AdWords:        g.AdWords,
@@ -194,6 +196,7 @@ func (s *YAMLStore) flushLocked() error {
 			Enabled:        cfg.Enabled,
 			Mode:           string(cfg.Mode),
 			RulesMessageID: cfg.RulesMessageID,
+			RulesLink:      cfg.RulesLink,
 			Welcome:        cfg.Welcome,
 			Tag:            cfg.Tag,
 			AdWords:        cfg.AdWords,

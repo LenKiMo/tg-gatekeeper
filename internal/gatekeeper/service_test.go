@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/png"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -245,6 +246,94 @@ func runBackground(t *testing.T, svc *Service) {
 
 // ---------------------------------------------------------------- 测试
 
+// TestWelcomeNicknameAndRulesLink 覆盖欢迎语的两个真实问题：
+//  1. {mention} 必须用入群时记录的真实昵称（不能用占位文字"新成员"）；
+//  2. 群规消息存在、且模板没自带链接时，追加的是一条 MarkdownV2 链接（可点击）。
+func TestWelcomeNicknameAndRulesLink(t *testing.T) {
+	const chatID int64 = -1001796791307
+	svc, api, registry, _ := testService(t, func(cfg *config.Config) {
+		cfg.GroupDefaults.Welcome = "欢迎{mention}"
+	})
+	ctx := context.Background()
+
+	group, err := svc.Group(ctx, chatID)
+	if err != nil {
+		t.Fatalf("读取群配置失败: %v", err)
+	}
+	group.RulesMessageID = 37057
+	if err := svc.SaveGroup(ctx, group); err != nil {
+		t.Fatalf("保存群配置失败: %v", err)
+	}
+
+	if err := svc.OnMembersJoined(ctx, chatID, 1, []Member{{UserID: 7, DisplayName: "漠伦"}}); err != nil {
+		t.Fatalf("处理入群失败: %v", err)
+	}
+	sess, err := registry.Get(ctx, domain.SessionKey{ChatID: chatID, UserID: 7})
+	if err != nil {
+		t.Fatalf("会话应当存在: %v", err)
+	}
+	if err := svc.OnCallback(ctx, CallbackEvent{
+		ID: "cb-welcome", ChatID: chatID, UserID: 7, DisplayName: "漠伦",
+		Data: telegram.EncodeAnswer(sess.ID, correctToken(t, sess)),
+	}); err != nil {
+		t.Fatalf("答题失败: %v", err)
+	}
+	runBackground(t, svc) // Claim 只把副作用写进 outbox，跑一次 worker 才真正发送
+	if len(api.texts) == 0 {
+		t.Fatal("应当发送欢迎语")
+	}
+	got := api.texts[0].text
+	if !strings.Contains(got, "漠伦") || !strings.Contains(got, "tg://user?id=7") {
+		t.Fatalf("欢迎语应包含真实昵称的可点击提及，实际 %q", got)
+	}
+	want := "[点击阅读](https://t.me/c/1796791307/37057)"
+	if !strings.Contains(got, want) {
+		t.Fatalf("欢迎语应包含群规链接 %s，实际 %q", want, got)
+	}
+}
+
+// TestWelcomeTemplateLinkIsNotDuplicated 验证模板自己写了链接时不再追加群规链接。
+func TestWelcomeTemplateLinkIsNotDuplicated(t *testing.T) {
+	const chatID int64 = -1001796791307
+	const link = "https://t.me/ArknightsEndfieldCN/37057"
+	svc, api, registry, _ := testService(t, func(cfg *config.Config) {
+		cfg.GroupDefaults.Welcome = "欢迎{mention}\n建议阅读群公约：[点击阅读](" + link + ")"
+	})
+	ctx := context.Background()
+	group, err := svc.Group(ctx, chatID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.RulesMessageID = 37057
+	if err := svc.SaveGroup(ctx, group); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.OnMembersJoined(ctx, chatID, 1, []Member{{UserID: 7, DisplayName: "漠伦"}}); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := registry.Get(ctx, domain.SessionKey{ChatID: chatID, UserID: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.OnCallback(ctx, CallbackEvent{
+		ID: "cb-link", ChatID: chatID, UserID: 7, DisplayName: "漠伦",
+		Data: telegram.EncodeAnswer(sess.ID, correctToken(t, sess)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runBackground(t, svc)
+	if len(api.texts) == 0 {
+		t.Fatal("应当发送欢迎语")
+	}
+	got := api.texts[0].text
+	if n := strings.Count(got, "t.me/"); n != 1 {
+		t.Fatalf("模板自带链接时不应再追加群规链接（t.me 出现 %d 次）: %q", n, got)
+	}
+	if strings.Contains(got, "t.me/c/") {
+		t.Fatalf("不应出现自动追加的 t.me/c 链接: %q", got)
+	}
+}
+
 // TestDuplicateJoinSignalDoesNotSendSecondChallenge 是生产事故的第二道回归。
 //
 // 入群信号有两条通道（new_chat_members 服务消息 + chat_member 状态跃迁），Telegram 可能
@@ -339,6 +428,12 @@ func TestCorrectAnswerPasses(t *testing.T) {
 	}
 	if len(api.texts) != 1 || !bytes.Contains([]byte(api.texts[0].text), []byte("欢迎")) {
 		t.Fatalf("应当发送欢迎语，实际 %+v", api.texts)
+	}
+	// 昵称必须是新成员本人：曾经因为渲染时传空字符串而退化成"新成员"占位。
+	if got := api.texts[0].text; !strings.Contains(got, "新人") || !strings.Contains(got, "tg://user?id=7") {
+		t.Fatalf("欢迎语的提及应带上真实昵称，实际 %q", got)
+	} else if strings.Contains(got, "新成员") {
+		t.Fatalf("欢迎语不该出现占位昵称，实际 %q", got)
 	}
 	// 题目消息与入群消息都应当被清理。
 	if len(api.deleted) < 2 {
