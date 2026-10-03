@@ -1,0 +1,30 @@
+# ---- 运行时数据（不进仓库）----
+/data/*
+# 图片缓存兜底（测试若忘了改 cache_dir 也不会污染仓库）
+data/cache/
+# 最小示例数据集随仓库提供，方便 check-config 立刻可跑。
+# 注意：.gitignore 的 # 只在行首才是注释，规则行尾不能写注释，否则反选会整行失效。
+!/data/items.example.json
+
+# ---- 部署与私有内容（实际部署用的数据集/配置/部署脚本都不进公开仓库）----
+/configs/gatekeeper.yaml
+# 本机实际部署用的配置（含题库路径/群号），不进仓库
+/configs/*.local.yaml
+/deploy/
+/.secrets/
+/prompt.md
+/plan_sol.log
+/docs/DESIGN.sol-run1.md
+.env
+
+# ---- 构建产物 ----
+/dist/
+/logs/
+*.exe
+*.test
+*.out
+
+# ---- 编辑器 ----
+.idea/
+.vscode/
+*.swp

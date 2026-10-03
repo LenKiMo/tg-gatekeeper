@@ -1,0 +1,13 @@
+# 构建产物与本地数据，不进镜像
+dist/
+data/
+logs/
+*.exe
+.git/
+.gitignore
+docs/
+tools/_probe/
+prompt.md
+plan_sol.log
+configs/*.local.yaml
+configs/gatekeeper.yaml

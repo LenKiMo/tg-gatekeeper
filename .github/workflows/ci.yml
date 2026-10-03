@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    # 固定 LTS 而不是 ubuntu-latest：runner 镜像会随 latest 标签迁移，固定后构建行为可复现
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          # 用 go.mod 声明的最低版本编译，顺带验证"最低版本可构建"
+          go-version-file: go.mod
+          cache: true
+
+      - name: 编译与静态检查
+        run: |
+          go build ./...
+          go vet ./...
+
+      - name: 单元与流程测试
+        run: go test -count=1 ./...
+
+      - name: 竞态检测（需要 cgo）
+        run: CGO_ENABLED=1 go test -race -count=1 ./internal/store/... ./internal/dispatch/... ./internal/challenge/...
+
+      - name: 静态单二进制构建（部署形态）
+        run: CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /tmp/tg-gatekeeper ./cmd/tg-gatekeeper
+
+      - name: check-config 自检（用仓库自带的最小示例数据集）
+        run: |
+          TG_BOT_TOKEN=dummy:ci /tmp/tg-gatekeeper check-config -c configs/gatekeeper.example.yaml
+
+      # 镜像本身也纳入 CI：Dockerfile 与"容器以 uid 10001 运行、data 需授权"这条部署说明
+      # 只有在真跑一遍时才验证得到。
+      - name: 构建容器镜像并冒烟自检
+        run: |
+          docker build -t tg-gatekeeper:ci .
+          mkdir -p data && chmod -R a+rwX data
+          docker run --rm \
+            -v "$PWD/data:/app/data" \
+            -v "$PWD/configs:/app/configs:ro" \
+            -e TG_BOT_TOKEN=dummy:ci \
+            tg-gatekeeper:ci check-config -c configs/gatekeeper.example.yaml

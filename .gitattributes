@@ -1,0 +1,7 @@
+# 仓库统一 LF：Linux/macOS 贡献者与 CI 不必处理 CRLF 噪声。
+# （Windows 检出仍可用 core.autocrlf 自行决定，但这些 Go 源文件按 LF 存库。）
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary

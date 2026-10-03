@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 交叉编译并生成校验和
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          version="${GITHUB_REF_NAME}"
+          for target in linux/amd64 linux/arm64 windows/amd64 darwin/arm64; do
+            goos="${target%%/*}"
+            goarch="${target##*/}"
+            ext=""
+            if [ "$goos" = "windows" ]; then ext=".exe"; fi
+            name="tg-gatekeeper_${version}_${goos}_${goarch}${ext}"
+            echo "构建 ${name}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "-s -w -X main.version=${version}" \
+              -o "dist/${name}" ./cmd/tg-gatekeeper
+          done
+          (cd dist && sha256sum ./* > SHA256SUMS && cat SHA256SUMS)
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/*

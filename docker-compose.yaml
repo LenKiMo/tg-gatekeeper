@@ -1,0 +1,26 @@
+services:
+  tg-gatekeeper:
+    build: .
+    image: tg-gatekeeper:latest
+    container_name: tg-gatekeeper
+    restart: unless-stopped
+    # 单实例约束：会话注册表与分派器都是进程内的；多副本会重复消费更新并互相覆盖状态。
+    # 需要多副本请先改造成 webhook + 分布式租约。
+    environment:
+      # 不要把 token 写进配置文件：用环境变量或 .env
+      TG_BOT_TOKEN: "${TG_BOT_TOKEN:?请在 .env 或环境里设置 TG_BOT_TOKEN}"
+      TZ: Asia/Shanghai
+    volumes:
+      # 注意：容器以 uid 10001 运行，宿主目录要先授权，否则 SQLite/缓存写不进去：
+      #   mkdir -p data && sudo chown -R 10001:10001 data
+      # 配置（只读；若用 storage.group_store: yaml 则改为可写）
+      # 先 cp configs/gatekeeper.example.yaml configs/gatekeeper.yaml 并按需改 provider
+      - ./configs:/app/configs:ro
+      # 数据集、SQLite、图片缓存、审计日志（必须可写）
+      - ./data:/app/data
+    command: ["run", "-c", "configs/gatekeeper.yaml"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

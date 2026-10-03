@@ -1,0 +1,214 @@
+# tg-gatekeeper 通用配置示例
+#
+# 这份文件刻意不含任何题材词汇：把 provider 换成你自己的数据集，就能部署到
+# 任何"看图选名字"场景。未知字段会直接报错（防止拼错后静默用默认值）。
+#
+# 敏感项可用 ${ENV_NAME} 引用环境变量，例如 token: ${TG_BOT_TOKEN}
+
+schema_version: 1
+
+bot:
+  token: ${TG_BOT_TOKEN}
+  owner_id: 0                      # /reload 等所有者命令的账号；0 = 关闭
+  api_endpoint: https://api.telegram.org/bot%s/%s
+  debug: false
+  polling_timeout_seconds: 60
+  update_buffer: 100
+  ignore_channel_commands: true
+  http_proxy: ""                   # 例如 http://127.0.0.1:7890
+  request_timeout_seconds: 20
+
+runtime:
+  data_dir: ./data
+  timezone: Asia/Shanghai
+  shutdown_timeout_seconds: 30
+  shutdown_grace_seconds: 10
+  healthcheck_on_start: true
+  log_level: info                  # debug | info | warn | error
+
+group_defaults:
+  enabled: true
+  mode: join                       # join（自行入群验证）| request（入群申请审批）
+  welcome: "欢迎 {mention} 加入本群，请先完成验证。"
+  rules_message_id: 0
+  ad_words: []
+
+commands:
+  request_mode: true
+  welcome: true
+  reg: true
+  tag: true
+  ping: true
+  help: true
+  response_delete_after_seconds: 30
+  welcome_delete_after_seconds: 3600
+  tag_max_runes: 16
+
+ad_filter:
+  enabled: true
+  global_words: []                 # 例如 ["代肝", "代充", "点击链接"]
+  include_group_words: true
+  normalize_nfkc: true
+  ignore_case: true
+  remove_whitespace: true
+  remove_zero_width: true
+  removable_separators: ["-", "_", ".", "·"]
+  bio_lookup_error_policy: audit_continue   # audit_continue | deny
+  match_mode: contains
+
+gatekeeper:
+  option_count: 12
+  min_option_count: 6
+  timeout_seconds: 60
+  kick_unban_after_seconds: 60     # 踢出后多久解封（允许重新入群再试）
+  block_pending_messages: true     # 待验证用户发言即按违规处置
+  failure_policy: deny             # deny（拒之门外）| allow（放行，安全性下降）
+  shortage_policy: deny            # deny（数据不足则不放行）| reduce（降级到 min_option_count）
+  max_image_attempts: 4
+  invited_member_policy: verify    # verify | allow
+  bot_member_policy: allow         # allow | verify
+  admin_member_policy: allow       # allow | verify
+  revoke_messages_on_ban: true
+  answer_wrong_alert: true
+  stale_callback_alert: true
+  button_columns: 2
+  caption_join: "欢迎 {mention}，请在 {timeout} 秒内选择与上图对应的名称。"
+  caption_request: "请在 {timeout} 秒内选择与上图对应的名称。"
+  admin_card_text: "用户 {mention} 正在进行验证，可通过下方按钮放行或封禁。"
+  difficulty:
+    strategy: uniform              # uniform | same_group | difficulty_band
+    difficulty_band: 1
+
+provider:
+  active: main
+  refresh_interval_seconds: 3600
+  definitions:
+    # 方式一：JSON/JSONL 文件（推荐：先用 dataset 子命令生成标准格式）
+    # 这里默认指向随仓库提供的静态示例（12 个条目、图片内嵌为 data URL），
+    # 因此复制本配置后 check-config 立刻就能通过；换成自己的数据集只需改 path。
+    main:
+      type: jsonfile
+      jsonfile:
+        path: ./data/items.example.json
+        format: auto               # json | jsonl | auto
+        base_dir: ./data           # 相对图片路径的基准目录
+        pool: default
+        watch: true
+    # 方式二：图片目录（文件名即标签，零门槛）
+    dirs:
+      type: directory
+      directory:
+        root: ./data/images
+        labels_file: ""            # 可选：一行一个标签 / {"文件名":"标签"}
+        labels_format: lines
+        recursive: false
+        extensions: [".jpg", ".jpeg", ".png", ".webp"]
+        pool: default
+    # 方式三：SQL（SQLite/MySQL）
+    db:
+      type: sql
+      sql:
+        driver: sqlite
+        dsn: ./data/items.db
+        query: "SELECT id, label, image_ref, pool, groups_json, difficulty, weight, enabled FROM items"
+        max_open_connections: 4
+        query_timeout_seconds: 10
+    # 方式四：远程 HTTP（宿主系统自己维护数据）
+    remote:
+      type: http
+      http:
+        url: https://example.com/dataset.json
+        format: auto
+        method: GET
+        headers: {}
+        bearer_token: ""
+        allowed_hosts: ["example.com"]   # 必填，未填需显式 allow_private_ips
+        timeout_seconds: 15
+        max_response_bytes: 8388608
+        max_redirects: 2
+        cache_file: ./data/cache/dataset.json
+        stale_if_error_seconds: 86400
+
+images:
+  allowed_schemes: ["file", "https", "http"]
+  local_roots: ["./data"]          # file: 引用必须落在这里面（防目录穿越）
+  max_download_bytes: 8388608
+  max_decoded_pixels: 24000000
+  max_width: 4096
+  max_height: 4096
+  output_format: jpeg              # jpeg | png（统一重编码，顺带抹掉 EXIF/文件名）
+  jpeg_quality: 88
+  strip_metadata: true
+  http:
+    timeout_seconds: 15
+    max_redirects: 2
+    allowed_hosts: []              # 留空 + allow_any_host=false 时只允许公网地址
+    allow_private_ips: false
+    allow_any_host: false
+    user_agent: "tg-gatekeeper/1"
+  cache:
+    enabled: true
+    dir: ./data/cache/images
+    max_bytes: 536870912
+    ttl_seconds: 604800
+
+storage:
+  group_store: sqlite              # sqlite | mysql | yaml
+  session_registry: sqlite         # sqlite | mysql | memory（memory 仅测试）
+  deletion_queue: sqlite           # sqlite | mysql | memory
+  auto_migrate: true
+  sqlite:
+    path: ./data/gatekeeper.db
+    wal: true
+    busy_timeout_ms: 5000
+    max_open_connections: 1
+  mysql:
+    dsn: ${MYSQL_DSN}
+    max_open_connections: 10
+    max_idle_connections: 5
+    connection_max_lifetime_seconds: 1800
+  yaml:
+    path: ./data/groups.yaml
+    runtime_writes: true
+    file_mode: "0600"
+
+session:
+  terminal_retention_seconds: 86400
+  recovery_scan_interval_seconds: 5
+  recovery_batch_size: 100
+  effect_retry_initial_seconds: 2
+  effect_retry_max_seconds: 300
+  effect_max_attempts: 20
+
+deletion_worker:
+  poll_interval_seconds: 2
+  batch_size: 50
+  lease_seconds: 60
+  retry_initial_seconds: 5
+  retry_max_seconds: 300
+  abandon_after_seconds: 86400
+
+dispatcher:
+  critical_workers: 8
+  critical_capacity: 512
+  critical_warn_at: 256
+  critical_submit_timeout_seconds: 0
+  command_workers: 4
+  command_per_key_capacity: 32
+  command_total_capacity: 256
+  notice_workers: 1
+  notice_total_capacity: 32
+
+audit:
+  enabled: true
+  format: jsonl
+  stdout: true
+  file: ./data/logs/audit.jsonl
+  file_mode: "0640"
+  rotate_max_megabytes: 100
+  rotate_keep_files: 10
+  rotate_keep_days: 30
+  include_display_name: true
+  hash_entity_id: true
+  redact_bio: true
+  redact_answer_label: true

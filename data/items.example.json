@@ -1,0 +1,114 @@
+{
+ "source": "builtin-demo",
+ "generated_at": "静态示例",
+ "items": [
+  {
+   "id": "demo-01",
+   "label": "示例甲",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mPQiFpAFcQwatCoQaMGjRo0atCoQQNvEABBoIyfqIUdAQAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  },
+  {
+   "id": "demo-02",
+   "label": "示例乙",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mMwT1xNFcQwatCoQaMGjRo0atCoQQNvEABsgtbf1QFPSQAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  },
+  {
+   "id": "demo-03",
+   "label": "示例丙",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mNwy9hGFcQwatCoQaMGjRo0atCoQQNvEACXZCEuS/HAXgAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  },
+  {
+   "id": "demo-04",
+   "label": "示例丁",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mMIzT9IFcQwatCoQaMGjRo0atCoQQNvEADCRmtuhxFQ4gAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  },
+  {
+   "id": "demo-05",
+   "label": "示例戊",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mNIKTtDFcQwatCoQaMGjRo0atCoQQNvEADtKLWuBuYRagAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  },
+  {
+   "id": "demo-06",
+   "label": "示例己",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mMorr1OFcQwatCoQaMGjRo0atCoQQNvEAAYGf/u5rgwvgAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  },
+  {
+   "id": "demo-07",
+   "label": "示例庚",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mNoanlEFcQwatCoQaMGjRo0atCoQQNvEABC+0o9XktZTgAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  },
+  {
+   "id": "demo-08",
+   "label": "示例辛",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mOY2P2WKohh1KBRg0YNGjVo1KBRgwbeIABt3ZR9j1dYLAAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  },
+  {
+   "id": "demo-09",
+   "label": "示例壬",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mNYMOkHVRDDqEGjBo0aNGrQqEGjBg28QQCYv969WSqu+wAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  },
+  {
+   "id": "demo-10",
+   "label": "示例癸",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mNYP5OZKohh1KBRg0YNGjVo1KBRgwbeIACQQujfkM33twAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  },
+  {
+   "id": "demo-11",
+   "label": "示例子",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mPYt4CPKohh1KBRg0YNGjVo1KBRgwbeIAC7JDMu7lFDbQAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  },
+  {
+   "id": "demo-12",
+   "label": "示例丑",
+   "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mM4u1ySKohh1KBRg0YNGjVo1KBRgwbeIADmBn1uv/7TOgAAAABJRU5ErkJggg==",
+   "pool": "demo",
+   "groups": [
+    "示例"
+   ]
+  }
+ ]
+}
