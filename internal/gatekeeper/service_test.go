@@ -829,6 +829,91 @@ func TestOnBotContactRejectsWrongUser(t *testing.T) {
 	}
 }
 
+// firstField 取命令的第一个字段（模拟路由传进来的 command 参数）。
+func firstField(text string) string {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+// mustGroup 读群配置（命令类测试都要核对"真的写进库了"）。
+func mustGroup(t *testing.T, svc *Service, chatID int64) domain.GroupConfig {
+	t.Helper()
+	g, err := svc.Group(context.Background(), chatID)
+	if err != nil {
+		t.Fatalf("读取群配置失败: %v", err)
+	}
+	return g
+}
+
+// TestAdWordsCommand 覆盖 /adwords 的查看/追加/删除/整表替换/清空。
+//
+// 这个命令的存在意义就是"别再手改库"：群级设置在库的群行上，SQL 写错列类型
+// 会让读群配置整体失败（生产上表现为所有人入群都不触发验证）。
+func TestAdWordsCommand(t *testing.T) {
+	svc, api, _, _ := testService(t, nil)
+	ctx := context.Background()
+	api.admins[8] = true
+	cmd := func(text string) string {
+		api.texts = nil
+		if err := svc.HandleCommand(ctx, -100, 8, "管理员", firstField(text), text, domain.MessageRef{}); err != nil {
+			t.Fatalf("命令 %q 失败: %v", text, err)
+		}
+		if len(api.texts) == 0 {
+			t.Fatalf("命令 %q 应有回复", text)
+		}
+		return api.texts[len(api.texts)-1].text
+	}
+
+	// 整表替换 → 查看
+	if got := cmd("/adwords set 六合彩 澳门 赌场"); !strings.Contains(got, "六合彩") || !strings.Contains(got, "3 个") {
+		t.Fatalf("set 后应显示 3 个词，实际 %q", got)
+	}
+	if words := mustGroup(t, svc, -100).AdWords; len(words) != 3 || words[0] != "六合彩" {
+		t.Fatalf("set 未生效，实际 %v", words)
+	}
+	// 追加（含重复与空白，应去重）
+	cmd("/adwords add 澳门 太阳城")
+	if words := mustGroup(t, svc, -100).AdWords; len(words) != 4 {
+		t.Fatalf("add 应去重后为 4 个，实际 %v", words)
+	}
+	// 删除
+	cmd("/adwords del 澳门")
+	if words := mustGroup(t, svc, -100).AdWords; len(words) != 3 {
+		t.Fatalf("del 后应为 3 个，实际 %v", words)
+	}
+	// 清空
+	if got := cmd("/adwords clear"); !strings.Contains(got, "为空") {
+		t.Fatalf("clear 后应提示为空，实际 %q", got)
+	}
+	if words := mustGroup(t, svc, -100).AdWords; len(words) != 0 {
+		t.Fatalf("clear 后应为空，实际 %v", words)
+	}
+	// 再看 group 的原值是否被正确持久化（不是只改了内存）
+	if got := cmd("/adwords"); !strings.Contains(got, "为空") {
+		t.Fatalf("查看应显示为空，实际 %q", got)
+	}
+}
+
+// TestAdWordsCommandRejectsNonAdmin 非管理员不能改词表。
+func TestAdWordsCommandRejectsNonAdmin(t *testing.T) {
+	svc, api, _, _ := testService(t, nil)
+	ctx := context.Background()
+	before := mustGroup(t, svc, -100).AdWords
+	if err := svc.HandleCommand(ctx, -100, 7, "普通成员", "/adwords", "/adwords clear", domain.MessageRef{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.texts) == 0 || !strings.Contains(api.texts[len(api.texts)-1].text, "只有管理员") {
+		t.Fatalf("应提示只有管理员可改，实际 %+v", api.texts)
+	}
+	after := mustGroup(t, svc, -100).AdWords
+	if len(after) != len(before) {
+		t.Fatalf("非管理员不得改动词表：%v → %v", before, after)
+	}
+}
+
 // TestAdWordRejectsNewMember 验证昵称命中广告词时直接封禁且不出题。
 func TestAdWordRejectsNewMember(t *testing.T) {
 	svc, api, _, _ := testService(t, func(cfg *config.Config) {

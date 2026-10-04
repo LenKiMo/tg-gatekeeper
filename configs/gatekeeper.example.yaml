@@ -74,6 +74,8 @@ gatekeeper:
   bot_member_policy: allow         # allow | verify
   admin_member_policy: allow       # allow | verify
   revoke_messages_on_ban: true
+  # 广告词可用群内命令 /adwords 查看与增删（add/del/set/clear）——群级词表在库里，
+  # 改了这里的默认值不影响已存在的群，用命令改那个群自己的词表。
   # 广告词命中的封禁天数；0 = 永久封禁。广告号很快会被注销，默认给 30 天就够，
   # 免得群的黑名单随时间无限膨胀。
   ad_word_ban_days: 30

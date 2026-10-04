@@ -127,6 +127,8 @@ func (s *Service) HandleCommand(ctx context.Context, chatID, userID int64, displ
 		return s.cmdReg(ctx, chatID, userID, text, msgRef)
 	case "/tag":
 		return s.cmdTag(ctx, chatID, userID, text)
+	case "/adwords", "/adword", "/banwords":
+		return s.cmdAdWords(ctx, chatID, userID, text)
 	case "/reload":
 		if userID != s.ownerID() {
 			return nil
@@ -227,6 +229,83 @@ func (s *Service) cmdWelcome(ctx context.Context, chatID, userID int64, text str
 	return s.replyTemp(ctx, chatID, userID, "欢迎语已更新（验证通过后发送）。")
 }
 
+// cmdAdWords 管理本群广告词（昵称/简介命中即封禁，见 gatekeeper.ad_word_ban_days）。
+//
+//	/adwords                 查看当前词表
+//	/adwords add 六合彩 澳门   追加
+//	/adwords del 澳门          删除
+//	/adwords set 六合彩 澳门   整表替换
+//	/adwords clear            清空（此后只受 ad_filter.global_words 约束）
+//
+// 之所以要有这个命令：群级设置在库里的群行上，用 SQL 手改列类型写错就会让
+// 读群配置整体失败（表现为"所有人入群都不触发验证"）。走命令由程序自己写库。
+func (s *Service) cmdAdWords(ctx context.Context, chatID, userID int64, text string) error {
+	ok, err := s.requireAdmin(ctx, chatID, userID)
+	if err != nil || !ok {
+		return s.replyTemp(ctx, chatID, userID, "只有管理员可以修改广告词表。")
+	}
+	group, err := s.Group(ctx, chatID)
+	if err != nil {
+		return err
+	}
+	show := func() error {
+		if len(group.AdWords) == 0 {
+			return s.replyTemp(ctx, chatID, userID, "本群广告词表为空（仅受全局词表约束）。")
+		}
+		return s.replyTemp(ctx, chatID, userID, fmt.Sprintf("本群广告词 %d 个：\n%s\n（命中即封禁 %d 天，0 = 永久）",
+			len(group.AdWords), strings.Join(group.AdWords, "、"), s.cfg.Gatekeeper.AdWordBanDays))
+	}
+
+	fields := strings.Fields(strings.TrimSpace(strings.TrimPrefix(text, "/"+strings.Fields(text)[0][1:])))
+	if len(fields) == 0 {
+		return show()
+	}
+	action, args := strings.ToLower(fields[0]), fields[1:]
+	switch action {
+	case "add", "追加":
+		group.AdWords = append(group.AdWords, args...)
+	case "del", "remove", "删除":
+		drop := make(map[string]bool, len(args))
+		for _, a := range args {
+			drop[a] = true
+		}
+		kept := make([]string, 0, len(group.AdWords))
+		for _, w := range group.AdWords {
+			if !drop[w] {
+				kept = append(kept, w)
+			}
+		}
+		group.AdWords = kept
+	case "set", "重置":
+		group.AdWords = args
+	case "clear", "off", "清空":
+		group.AdWords = nil
+	default:
+		return s.replyTemp(ctx, chatID, userID,
+			"用法：/adwords［查看］| /adwords add 词… | /adwords del 词… | /adwords set 词… | /adwords clear")
+	}
+	// 空白词会被过滤器丢弃，这里也顺手去掉，避免词表里出现看不见的项。
+	cleaned := make([]string, 0, len(group.AdWords))
+	seen := make(map[string]bool, len(group.AdWords))
+	for _, w := range group.AdWords {
+		w = strings.TrimSpace(w)
+		if w == "" || seen[w] {
+			continue
+		}
+		seen[w] = true
+		cleaned = append(cleaned, w)
+	}
+	group.AdWords = cleaned
+	if err := s.SaveGroup(ctx, group); err != nil {
+		return s.replyTemp(ctx, chatID, userID, "保存失败："+err.Error())
+	}
+	s.audit(ctx, ports.AuditEvent{
+		Event: "command.adwords", ChatID: chatID, UserID: userID, Result: "ok",
+		Extra: map[string]string{"action": action, "count": itoa(int64(len(cleaned)))},
+	})
+	return show()
+}
+
 // cmdReg 设置群规来源，三种用法：
 //   - /reg <http(s) 链接>：显式链接（推荐，公群可以直接给 t.me/<群名>/<消息ID> 这种好看的链接）
 //   - /reg（回复一条消息）：记录该消息 ID，欢迎语里的 {rules} 会推导成 t.me/c/<内部ID>/<消息ID>
@@ -308,5 +387,6 @@ func helpText(cfg *config.Config) string {
 		"· /welcome 欢迎语（支持 {mention} 提及、{rules} 群规链接；clear 清空）",
 		"· /reg <链接> 设置群规链接（或回复一条消息用 /reg 把它设为群规）",
 		"· /tag 验证通过后自动设置的成员标签（clear 清空）",
+		"· /adwords [add|del|set|clear] 本群广告词表（昵称/简介命中即封禁）",
 	}, "\n")
 }
