@@ -200,12 +200,47 @@ func TestAdminKeyboard(t *testing.T) {
 	if len(grid) != 1 || len(grid[0]) != 2 {
 		t.Fatalf("管理员按钮布局异常: %+v", grid)
 	}
-	pass, err := Decode(grid[0][0].Data)
+	// 顺序：封禁在前、放行在后（与运营看到的一致）。
+	ban, err := Decode(grid[0][0].Data)
+	if err != nil || ban.Kind != CallbackAdminBan || ban.SessionID != sessionID {
+		t.Fatalf("封禁按钮异常: %+v err=%v", ban, err)
+	}
+	pass, err := Decode(grid[0][1].Data)
 	if err != nil || pass.Kind != CallbackAdminPass || pass.SessionID != sessionID {
 		t.Fatalf("放行按钮异常: %+v err=%v", pass, err)
 	}
-	ban, err := Decode(grid[0][1].Data)
-	if err != nil || ban.Kind != CallbackAdminBan || ban.SessionID != sessionID {
-		t.Fatalf("封禁按钮异常: %+v err=%v", ban, err)
+}
+
+// TestChallengeKeyboardAppendsAdminRow 验证入群模式的题目键盘 = 选项 + 末行管理员键，
+// 且两种回调数据互不串味（选项是 answer，末行是 admin）。
+func TestChallengeKeyboardAppendsAdminRow(t *testing.T) {
+	sessionID, err := domain.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := []domain.Option{
+		{Label: "甲", Token: "aaa111"}, {Label: "乙", Token: "bbb222"},
+		{Label: "丙", Token: "ccc333"}, {Label: "丁", Token: "ddd444"},
+	}
+	grid := ChallengeKeyboard(options, 2, sessionID)
+	if len(grid) != 3 { // 2 行选项 + 1 行管理员键
+		t.Fatalf("题目键盘行数应为 3，实际 %d: %+v", len(grid), grid)
+	}
+	if len(grid[2]) != 2 || grid[2][0].Text != "🚫 封禁" || grid[2][1].Text != "✅ 放行" {
+		t.Fatalf("末行应为管理员键，实际 %+v", grid[2])
+	}
+	// 选项行仍然是答案回调
+	for i, row := range grid[:2] {
+		for j, btn := range row {
+			cb, err := Decode(btn.Data)
+			if err != nil || cb.Kind != CallbackAnswer || cb.SessionID != sessionID {
+				t.Fatalf("选项[%d][%d] 应是答案回调: %+v err=%v", i, j, cb, err)
+			}
+		}
+	}
+	// 管理员行不是答案回调（否则谁点"封禁"就可能被当成答题）
+	cb, err := Decode(grid[2][0].Data)
+	if err != nil || cb.Kind != CallbackAdminBan {
+		t.Fatalf("末行应是管理员回调: %+v err=%v", cb, err)
 	}
 }

@@ -91,10 +91,24 @@ func OptionKeyboard(options []domain.Option, columns int, sessionID string) port
 	return grid
 }
 
-// AdminKeyboard 是申请模式下的群内管理员处置按钮。
-func AdminKeyboard(sessionID string) ports.ButtonGrid {
-	return ports.ButtonGrid{{
-		{Text: "✅ 放行", Data: EncodeAdmin(sessionID, false)},
+// AdminRow 管理员处置键（一行两个）：封禁在前、放行在后。
+func AdminRow(sessionID string) []ports.Button {
+	return []ports.Button{
 		{Text: "🚫 封禁", Data: EncodeAdmin(sessionID, true)},
-	}}
+		{Text: "✅ 放行", Data: EncodeAdmin(sessionID, false)},
+	}
+}
+
+// AdminKeyboard 单独一张管理员卡片的键盘。（申请模式下题目发在私聊，
+// 管理员看不到，因此群里仍需这张卡片。）
+func AdminKeyboard(sessionID string) ports.ButtonGrid {
+	return ports.ButtonGrid{AdminRow(sessionID)}
+}
+
+// ChallengeKeyboard 入群模式的题目键盘：选项 + 末行管理员处置键。
+//
+// 管理员按钮和选项在同一张卡片上，因此不需要再发一条"管理员卡片"——
+// 多发一条消息在千人大群里纯属冗余。
+func ChallengeKeyboard(options []domain.Option, columns int, sessionID string) ports.ButtonGrid {
+	return append(OptionKeyboard(options, columns, sessionID), AdminRow(sessionID))
 }

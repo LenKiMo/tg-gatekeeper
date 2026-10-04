@@ -27,7 +27,8 @@ type apiCall struct {
 	userID  int64
 	message int64
 	text    string
-	buttons int // 按钮个数（管理员卡片刻画放行/封禁）
+	buttons int      // 按钮个数
+	labels  []string // 按钮文案（按行展开，用于核对最后一行是不是放行/封禁）
 }
 
 type fakeAPI struct {
@@ -87,12 +88,18 @@ func (f *fakeAPI) DeclineJoinRequest(_ context.Context, chatID, userID int64) er
 
 func (f *fakeAPI) SendChallenge(_ context.Context, chatID int64, _ ports.ResolvedImage,
 	_ string, buttons ports.ButtonGrid) (domain.MessageRef, error) {
-	count := 0
+	count, labels := 0, make([]string, 0, 8)
 	for _, row := range buttons {
 		count += len(row)
+		for _, btn := range row {
+			labels = append(labels, btn.Text)
+		}
 	}
 	id := f.next()
-	f.challenges = append(f.challenges, apiCall{name: "challenge", chatID: chatID, message: id, text: string(rune('0' + count))})
+	f.challenges = append(f.challenges, apiCall{
+		name: "challenge", chatID: chatID, message: id,
+		text: string(rune('0' + count)), buttons: count, labels: labels,
+	})
 	return domain.MessageRef{ChatID: chatID, MessageID: id}, nil
 }
 
@@ -265,39 +272,60 @@ func welcomeOf(t *testing.T, api *fakeAPI) string {
 	return ""
 }
 
-// TestJoinModeSendsAdminCardWithButtons 验证普通入群模式也会发管理员处置卡片
-// （含放行/封禁按钮，并带上入群者提及）——管理员否则只能在 1000 人群里猜是谁在验证。
-func TestJoinModeSendsAdminCardWithButtons(t *testing.T) {
-	svc, api, _, _ := testService(t, func(cfg *config.Config) {
-		cfg.Gatekeeper.AdminCardText = "用户 {mention} 正在验证，请放行或封禁。"
-	})
+// TestJoinModeChallengeCarriesAdminButtons 验证入群模式的放行/封禁键就在题目卡片上：
+// 选项 + 末行两个管理员键（同一张卡片），并且不再额外发一条管理员消息。
+func TestJoinModeChallengeCarriesAdminButtons(t *testing.T) {
+	svc, api, _, _ := testService(t, nil)
 	ctx := context.Background()
 	if err := svc.OnMembersJoined(ctx, -100, 1, []Member{{UserID: 7, DisplayName: "新人"}}); err != nil {
 		t.Fatalf("处理入群失败: %v", err)
 	}
-	if len(api.texts) != 1 {
-		t.Fatalf("应当发出 1 张管理员卡片，实际 %d 张", len(api.texts))
+	if len(api.challenges) != 1 {
+		t.Fatalf("应当发出 1 道题，实际 %d", len(api.challenges))
 	}
-	card := api.texts[0]
-	if card.buttons != 2 {
-		t.Fatalf("管理员卡片应带 2 个按钮（放行/封禁），实际 %d", card.buttons)
+	if n := api.challenges[0].buttons; n != svc.cfg.Gatekeeper.OptionCount+2 {
+		t.Fatalf("题目卡片应有 %d 个按钮（选项+封禁+放行），实际 %d",
+			svc.cfg.Gatekeeper.OptionCount+2, n)
 	}
-	if !strings.Contains(card.text, "新人") || !strings.Contains(card.text, "tg://user?id=7") {
-		t.Fatalf("卡片应带上入群者提及，实际 %q", card.text)
+	labels := api.challenges[0].labels
+	if len(labels) < 2 || labels[len(labels)-2] != "🚫 封禁" || labels[len(labels)-1] != "✅ 放行" {
+		t.Fatalf("题目卡片最后一行应为 封禁/放行，实际 %v", labels)
+	}
+	// 关键：不再另发一条管理员消息（那样在群里是冗余的）。
+	if len(api.texts) != 0 {
+		t.Fatalf("入群模式不应再额外发消息，实际 %+v", api.texts)
 	}
 }
 
-// TestJoinModeAdminCardCanBeDisabled 验证关掉开关后不再发卡片。
-func TestJoinModeAdminCardCanBeDisabled(t *testing.T) {
-	svc, api, _, _ := testService(t, func(cfg *config.Config) {
-		cfg.Gatekeeper.AdminCardInJoin = false
-	})
-	if err := svc.OnMembersJoined(context.Background(), -100, 1,
-		[]Member{{UserID: 7, DisplayName: "新人"}}); err != nil {
+// TestJoinModeAdminButtonsStillEnforceRights 验证题目卡片上的管理员键同样只认管理员：
+// 普通成员点"放行"必须被拒。
+func TestJoinModeAdminButtonsStillEnforceRights(t *testing.T) {
+	svc, api, registry, _ := testService(t, nil)
+	ctx := context.Background()
+	if err := svc.OnMembersJoined(ctx, -100, 1, []Member{{UserID: 7, DisplayName: "新人"}}); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.texts) != 0 {
-		t.Fatalf("关闭 admin_card_in_join 后不应发卡片，实际 %+v", api.texts)
+	sess, err := registry.Get(ctx, domain.SessionKey{ChatID: -100, UserID: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// user 7 自己（非管理员）去点"放行"：应当被拒，且不改状态、不恢复权限。
+	if err := svc.OnCallback(ctx, CallbackEvent{
+		ID: "cb-self", ChatID: -100, UserID: 7, DisplayName: "新人",
+		Data: telegram.EncodeAdmin(sess.ID, false),
+	}); err != nil {
+		t.Fatalf("非管理员点击不应报错，只应被拒: %v", err)
+	}
+	runBackground(t, svc)
+	if len(api.restored) != 0 {
+		t.Fatalf("非管理员不得放行，实际 %+v", api.restored)
+	}
+	now, err := registry.Get(ctx, domain.SessionKey{ChatID: -100, UserID: 7})
+	if err != nil {
+		t.Fatalf("会话应仍在进行中: %v", err)
+	}
+	if now.State != domain.StatePending {
+		t.Fatalf("会话状态应保持 pending，实际 %s", now.State)
 	}
 }
 
@@ -494,7 +522,8 @@ func TestJoinFlowRestrictsAndSendsChallenge(t *testing.T) {
 		t.Fatalf("应当发出 1 道题，实际 %d", len(api.challenges))
 	}
 	// 题目按钮数量 = 配置的选项数。
-	if got := api.challenges[0].text; got != string(rune('0'+svc.cfg.Gatekeeper.OptionCount)) {
+	// 入群模式的题目卡片 = 选项 + 末行两个管理员键（封禁/放行）。
+	if got := api.challenges[0].text; got != string(rune('0'+svc.cfg.Gatekeeper.OptionCount+2)) {
 		t.Fatalf("按钮数量异常: %q", got)
 	}
 	sess, err := registry.Get(ctx, domain.SessionKey{ChatID: -100, UserID: 7})

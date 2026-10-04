@@ -122,9 +122,6 @@ type Gatekeeper struct {
 	BotMemberPolicy       string `yaml:"bot_member_policy"`     // allow | verify
 	AdminMemberPolicy     string `yaml:"admin_member_policy"`   // allow | verify
 	RevokeMessagesOnBan   bool   `yaml:"revoke_messages_on_ban"`
-	// AdminCardInJoin 为 true 时，普通入群模式也会在群里发一张管理员处置卡片
-	// （放行/封禁按钮），管理员不必等超时。
-	AdminCardInJoin bool `yaml:"admin_card_in_join"`
 	// DeleteJoinMessage 为 true 时，验证结束后连"XX 加入群组"服务消息一起删掉。
 	// 注意：自己点邀请链接入群时 Telegram 根本不产生这条服务消息。
 	DeleteJoinMessage bool `yaml:"delete_join_message"`
@@ -368,7 +365,6 @@ func Default() *Config {
 			BotMemberPolicy:       "allow",
 			AdminMemberPolicy:     "allow",
 			RevokeMessagesOnBan:   true,
-			AdminCardInJoin:       true,
 			DeleteJoinMessage:     true,
 			BlockPendingMessages:  true,
 			AnswerWrongAlert:      true,

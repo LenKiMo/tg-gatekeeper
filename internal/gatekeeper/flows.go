@@ -412,7 +412,13 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 		captionTemplate = s.cfg.Gatekeeper.CaptionRequest
 	}
 	caption := telegram.RenderCaption(captionTemplate, userID, displayName, s.cfg.Gatekeeper.TimeoutSeconds, "")
-	buttons := telegram.OptionKeyboard(ch.Options, s.cfg.Gatekeeper.ButtonColumns, session.ID)
+	// 入群模式的题目发在群里，管理员能直接看到，放行/封禁就并在这张卡片的最后一行
+	// （选项 + 2 个管理员键），不再另发一条管理员消息。
+	buttons := telegram.ChallengeKeyboard(ch.Options, s.cfg.Gatekeeper.ButtonColumns, session.ID)
+	if mode == domain.SessionRequest {
+		// 申请模式的题目发在私聊，管理员看不到，所以题目本身只放选项。
+		buttons = telegram.OptionKeyboard(ch.Options, s.cfg.Gatekeeper.ButtonColumns, session.ID)
+	}
 
 	ref, err := s.api.SendChallenge(ctx, target, built.Image, caption, buttons)
 	if err != nil {
@@ -441,10 +447,9 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 		return domain.Session{}, err
 	}
 
-	// 管理员处置卡片：申请模式必发；普通入群模式由 admin_card_in_join 控制
-	// （在 1000 人群里，管理员靠这张卡片认出是谁在验证并一键放行/封禁，
-	// 否则只能等超时自动踢）。
-	if mode == domain.SessionRequest || (mode == domain.SessionJoin && s.cfg.Gatekeeper.AdminCardInJoin) {
+	// 管理员处置卡片：只有申请模式需要（题目在私聊，群里得有一张能点按钮的卡片）。
+	// 入群模式的放行/封禁已经并进题目卡片，不再另发消息。
+	if mode == domain.SessionRequest {
 		text := telegram.RenderCaption(s.cfg.Gatekeeper.AdminCardText, userID, displayName, s.cfg.Gatekeeper.TimeoutSeconds, "")
 		cardRef, err := s.api.SendText(ctx, group.ChatID, text, true, telegram.AdminKeyboard(session.ID))
 		if err == nil && cardRef.Valid() {
