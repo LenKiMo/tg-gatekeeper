@@ -422,7 +422,16 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 
 	ref, err := s.api.SendChallenge(ctx, target, built.Image, caption, buttons)
 	if err != nil {
-		// 题目发不出去：把会话作废，并按失败策略处置。
+		// 申请模式最常见的失败原因：申请人从没和机器人说过话，Telegram 不允许
+		// 机器人主动私聊他（"bot can't initiate conversation with a user"）。
+		// 这时不该直接拒绝申请，而是在群里 @ 他、给一个直达机器人的按钮，
+		// 等他按下「开始」后由 OnBotContact 重新出题。
+		if mode == domain.SessionRequest {
+			if nerr := s.awaitContact(ctx, group, session, userID, displayName); nerr == nil {
+				return session, nil
+			}
+		}
+		// 其他失败：把会话作废，并按失败策略处置。
 		_, _ = s.registry.Claim(ctx, session.Key, domain.Event{
 			Kind: domain.EventCancel, SessionID: session.ID, At: time.Now(),
 		}, nil)
@@ -430,7 +439,7 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 			if s.cfg.Gatekeeper.FailurePolicy == "allow" {
 				_ = s.api.RestorePermissions(ctx, group.ChatID, userID)
 			} else {
-				_ = s.api.Ban(ctx, group.ChatID, userID, s.cfg.Gatekeeper.RevokeMessagesOnBan)
+				_ = s.api.Ban(ctx, group.ChatID, userID, s.cfg.Gatekeeper.RevokeMessagesOnBan, 0)
 			}
 		}
 		return domain.Session{}, fmt.Errorf("发送题目失败: %w", err)
@@ -497,21 +506,118 @@ func (s *Service) generate(ctx context.Context, gen *challenge.Generator, mode d
 	return nil, fmt.Errorf("%w: %v", image.ErrImage, lastErr)
 }
 
+// adBanUntil 返回广告词封禁的到期时间（unix 秒）；days <= 0 表示永久封禁（返回 0）。
+//
+// 广告号被 Telegram 注销得很快，永久封禁只会让群的黑名单随时间无限膨胀，
+// 因此默认改为临时封禁（ad_word_ban_days，默认 30 天）。
+func adBanUntil(days int) int64 {
+	if days <= 0 {
+		return 0
+	}
+	return time.Now().Add(time.Duration(days) * 24 * time.Hour).Unix()
+}
+
 // rejectByFilter 因广告词拒绝入群。
 func (s *Service) rejectByFilter(ctx context.Context, group domain.GroupConfig, m Member, word, field string) error {
 	extra := map[string]string{"field": field}
 	if word != "" {
 		extra["word"] = word
 	}
+	days := s.cfg.Gatekeeper.AdWordBanDays
+	extra["ban_days"] = itoa(int64(days))
 	s.audit(ctx, ports.AuditEvent{
 		Event: "verify.ad_rejected", ChatID: group.ChatID, UserID: m.UserID,
 		Result: "ban", Mode: string(group.Mode), DisplayName: m.DisplayName, Extra: extra,
 	})
+	until := adBanUntil(days)
 	if group.Mode == domain.VerifyModeRequest {
+		// 申请人还没进群：封禁（临时）+ 拒绝申请，让他这段时间内无法再申请。
+		_ = s.api.Ban(ctx, group.ChatID, m.UserID, s.cfg.Gatekeeper.RevokeMessagesOnBan, until)
 		return s.declineRequest(ctx, group.ChatID, m.UserID)
 	}
-	// 广告词拦截按"永久封禁"处理：这类账号通常就是广告号；管理员可在群里手动解封。
-	return s.api.Ban(ctx, group.ChatID, m.UserID, s.cfg.Gatekeeper.RevokeMessagesOnBan)
+	return s.api.Ban(ctx, group.ChatID, m.UserID, s.cfg.Gatekeeper.RevokeMessagesOnBan, until)
+}
+
+// awaitContact 处理"申请人还没和机器人交互过，私聊发不出去"：
+// 在群里 @ 他，并给一个 https://t.me/<bot>?start=<会话ID> 的按钮。
+// 会话保持"题目未发出"的状态，超时后按申请模式原有的策略拒绝申请。
+func (s *Service) awaitContact(ctx context.Context, group domain.GroupConfig, session domain.Session,
+	userID int64, displayName string) error {
+	_, bot := s.api.Self()
+	if bot == "" {
+		return errors.New("未知机器人用户名，无法生成联系链接")
+	}
+	text := telegram.RenderCaption(s.cfg.Gatekeeper.CaptionContact, userID, displayName,
+		s.cfg.Gatekeeper.TimeoutSeconds, "")
+	buttons := ports.ButtonGrid{{
+		{Text: s.cfg.Gatekeeper.ContactButton, URL: "https://t.me/" + bot + "?start=" + session.ID},
+	}}
+	notice, err := s.api.SendText(ctx, group.ChatID, text, true, buttons)
+	if err != nil {
+		return err
+	}
+	// 把提示挂成会话的"管理员消息"：验证结束（超时/放行/封禁/作废）时会被一起清掉。
+	if upd, aerr := s.registry.AttachMessages(ctx, session.Key, session.ID, domain.MessageRef{},
+		notice, time.Now().Add(s.cfg.ContactTimeout()), session.Version); aerr == nil {
+		session = upd
+	}
+	s.audit(ctx, ports.AuditEvent{
+		Event: "verify.awaiting_contact", ChatID: group.ChatID, UserID: userID,
+		SessionID: session.ID, Mode: string(domain.SessionRequest), NewState: string(domain.StatePreparing),
+		Result: "pending", DisplayName: displayName,
+	})
+	return nil
+}
+
+// OnBotContact 处理用户主动与机器人交互（私聊里的 /start <会话ID>）。
+//
+// 申请模式下机器人无法主动私聊没点过它的用户，因此群里会贴一条带
+// ?start=<会话ID> 的提示。用户按下「开始」后走到这里：作废等待中的会话
+// （顺带删掉群里的提示），然后重新出一道题私聊发给他。
+func (s *Service) OnBotContact(ctx context.Context, userID int64, displayName, payload string) error {
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		// 没有 payload：可能是用户自己搜到机器人按了开始，没有会话可关联。
+		return nil
+	}
+	waiting, err := s.registry.GetByID(ctx, payload)
+	if err != nil {
+		s.audit(ctx, ports.AuditEvent{
+			Event: "verify.contact_unknown", UserID: userID, Result: "ignored",
+			ErrorClass: classify(err), DisplayName: displayName,
+		})
+		return nil
+	}
+	if waiting.Key.UserID != userID || waiting.Mode != domain.SessionRequest || waiting.State.Terminal() {
+		// payload 被转发给别人、或会话已经处理过：忽略（防越权替他人验证）。
+		s.audit(ctx, ports.AuditEvent{
+			Event: "verify.contact_mismatch", ChatID: waiting.Key.ChatID, UserID: userID,
+			SessionID: waiting.ID, Result: "ignored", NewState: string(waiting.State), DisplayName: displayName,
+		})
+		return nil
+	}
+	_, _ = s.registry.Claim(ctx, waiting.Key, domain.Event{
+		Kind: domain.EventCancel, SessionID: waiting.ID, At: time.Now(),
+	}, nil)
+	if waiting.AdminMessage.Valid() {
+		_ = s.api.DeleteMessage(ctx, waiting.AdminMessage)
+	}
+	group, err := s.Group(ctx, waiting.Key.ChatID)
+	if err != nil {
+		return err
+	}
+	sess, err := s.startVerification(ctx, group, userID, displayName, domain.SessionRequest,
+		domain.MessageRef{}, 0, withUserChat(userID))
+	result := "challenge_sent"
+	if err != nil {
+		result = "failed"
+	}
+	s.audit(ctx, ports.AuditEvent{
+		Event: "verify.contact_received", ChatID: waiting.Key.ChatID, UserID: userID,
+		SessionID: sess.ID, Mode: string(domain.SessionRequest), Result: result,
+		ErrorClass: classify(err), DisplayName: displayName,
+	})
+	return err
 }
 
 func (s *Service) declineRequest(ctx context.Context, chatID, userID int64) error {

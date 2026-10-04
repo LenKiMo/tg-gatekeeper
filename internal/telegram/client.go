@@ -201,10 +201,11 @@ func (c *Client) RestorePermissions(_ context.Context, chatID, userID int64) err
 }
 
 // Ban 封禁（可控制是否撤回历史消息）。
-func (c *Client) Ban(_ context.Context, chatID, userID int64, revokeMessages bool) error {
+func (c *Client) Ban(_ context.Context, chatID, userID int64, revokeMessages bool, until int64) error {
 	cfg := tgbotapi.BanChatMemberConfig{
 		ChatMemberConfig: tgbotapi.ChatMemberConfig{ChatID: chatID, UserID: userID},
 		RevokeMessages:   revokeMessages,
+		UntilDate:        until, // 0 = 永久
 	}
 	_, err := c.api.Request(cfg)
 	return wrap("封禁", err)
@@ -359,6 +360,10 @@ func buildKeyboard(grid ports.ButtonGrid) tgbotapi.InlineKeyboardMarkup {
 	for _, row := range grid {
 		buttons := make([]tgbotapi.InlineKeyboardButton, 0, len(row))
 		for _, b := range row {
+			if b.URL != "" {
+				buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonURL(b.Text, b.URL))
+				continue
+			}
 			buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(b.Text, b.Data))
 		}
 		rows = append(rows, buttons)

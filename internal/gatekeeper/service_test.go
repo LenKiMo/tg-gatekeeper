@@ -29,22 +29,27 @@ type apiCall struct {
 	text    string
 	buttons int      // 按钮个数
 	labels  []string // 按钮文案（按行展开，用于核对最后一行是不是放行/封禁）
+	urls    []string // 链接按钮的 URL
+	until   int64    // 封禁到期时间（unix 秒；0 = 永久）
 }
 
 type fakeAPI struct {
-	restricted  []apiCall
-	restored    []apiCall
-	banned      []apiCall
-	unbanned    []apiCall
-	approved    []apiCall
-	declined    []apiCall
-	deleted     []apiCall
-	challenges  []apiCall
-	texts       []apiCall
-	tags        []apiCall
-	bioErr      error
-	nextMessage int64
-	admins      map[int64]bool
+	restricted []apiCall
+	restored   []apiCall
+	banned     []apiCall
+	unbanned   []apiCall
+	approved   []apiCall
+	declined   []apiCall
+	deleted    []apiCall
+	challenges []apiCall
+	texts      []apiCall
+	tags       []apiCall
+	bioErr     error
+	// challengeErr 非 nil 时，SendChallenge 直接失败——用来模拟申请模式下
+	// "用户没点过机器人，Telegram 不允许主动私聊"。
+	challengeErr error
+	nextMessage  int64
+	admins       map[int64]bool
 }
 
 func newFakeAPI() *fakeAPI {
@@ -66,8 +71,8 @@ func (f *fakeAPI) RestorePermissions(_ context.Context, chatID, userID int64) er
 	return nil
 }
 
-func (f *fakeAPI) Ban(_ context.Context, chatID, userID int64, _ bool) error {
-	f.banned = append(f.banned, apiCall{name: "ban", chatID: chatID, userID: userID})
+func (f *fakeAPI) Ban(_ context.Context, chatID, userID int64, _ bool, until int64) error {
+	f.banned = append(f.banned, apiCall{name: "ban", chatID: chatID, userID: userID, until: until})
 	return nil
 }
 
@@ -88,6 +93,9 @@ func (f *fakeAPI) DeclineJoinRequest(_ context.Context, chatID, userID int64) er
 
 func (f *fakeAPI) SendChallenge(_ context.Context, chatID int64, _ ports.ResolvedImage,
 	_ string, buttons ports.ButtonGrid) (domain.MessageRef, error) {
+	if f.challengeErr != nil {
+		return domain.MessageRef{}, f.challengeErr
+	}
 	count, labels := 0, make([]string, 0, 8)
 	for _, row := range buttons {
 		count += len(row)
@@ -105,11 +113,18 @@ func (f *fakeAPI) SendChallenge(_ context.Context, chatID int64, _ ports.Resolve
 
 func (f *fakeAPI) SendText(_ context.Context, chatID int64, text string, _ bool, buttons ports.ButtonGrid) (domain.MessageRef, error) {
 	id := f.next()
-	count := 0
+	count, urls := 0, make([]string, 0, 2)
 	for _, row := range buttons {
 		count += len(row)
+		for _, b := range row {
+			if b.URL != "" {
+				urls = append(urls, b.URL)
+			}
+		}
 	}
-	f.texts = append(f.texts, apiCall{name: "text", chatID: chatID, message: id, text: text, buttons: count})
+	f.texts = append(f.texts, apiCall{
+		name: "text", chatID: chatID, message: id, text: text, buttons: count, urls: urls,
+	})
 	return domain.MessageRef{ChatID: chatID, MessageID: id}, nil
 }
 
@@ -288,8 +303,8 @@ func TestJoinModeChallengeCarriesAdminButtons(t *testing.T) {
 			svc.cfg.Gatekeeper.OptionCount+2, n)
 	}
 	labels := api.challenges[0].labels
-	if len(labels) < 2 || labels[len(labels)-2] != "🚫 封禁" || labels[len(labels)-1] != "✅ 放行" {
-		t.Fatalf("题目卡片最后一行应为 封禁/放行，实际 %v", labels)
+	if len(labels) < 2 || labels[len(labels)-2] != "✅ 放行" || labels[len(labels)-1] != "🚫 封禁" {
+		t.Fatalf("题目卡片最后一行应为 放行/封禁（封禁在右下角），实际 %v", labels)
 	}
 	// 关键：不再另发一条管理员消息（那样在群里是冗余的）。
 	if len(api.texts) != 0 {
@@ -704,6 +719,116 @@ func TestNonPendingUserMessageIsIgnored(t *testing.T) {
 	}
 }
 
+// enableRequestMode 把群切成"入群申请审批"模式（默认是普通入群模式）。
+func enableRequestMode(t *testing.T, svc *Service, chatID int64) {
+	t.Helper()
+	group, err := svc.Group(context.Background(), chatID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.Mode = domain.VerifyModeRequest
+	if err := svc.SaveGroup(context.Background(), group); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRequestModeFallsBackToContactPrompt 验证申请模式的"未与机器人交互"处理：
+// 私聊发不出去时不能直接拒绝申请，而要在群里 @ 申请人并给出直达机器人的按钮。
+func TestRequestModeFallsBackToContactPrompt(t *testing.T) {
+	svc, api, registry, _ := testService(t, nil)
+	ctx := context.Background()
+	enableRequestMode(t, svc, -400)
+	api.challengeErr = errors.New("Bad Request: bot can't initiate conversation with a user")
+	if err := svc.OnJoinRequest(ctx, JoinRequest{
+		ChatID: -400, UserID: 30, UserChatID: 30, DisplayName: "申请者", UpdateID: 1,
+	}); err != nil {
+		t.Fatalf("申请处理失败: %v", err)
+	}
+
+	// 不能拒绝申请（旧实现在这里直接 decline，申请人永远没机会）。
+	if len(api.declined) != 0 {
+		t.Fatalf("不能因私聊失败就拒绝申请，实际 %+v", api.declined)
+	}
+	if len(api.texts) != 1 {
+		t.Fatalf("应当在群里发一条提示，实际 %+v", api.texts)
+	}
+	notice := api.texts[0]
+	if notice.chatID != -400 {
+		t.Fatalf("提示应发在群里，实际 chatID=%d", notice.chatID)
+	}
+	if !strings.Contains(notice.text, "申请者") || !strings.Contains(notice.text, "tg://user?id=30") {
+		t.Fatalf("提示应 @ 申请人，实际 %q", notice.text)
+	}
+	if len(notice.urls) != 1 || !strings.Contains(notice.urls[0], "?start=") {
+		t.Fatalf("提示应带一个直达机器人的链接按钮，实际 %+v", notice.urls)
+	}
+	// 会话仍在等待中（有 active 会话），且时间窗被放宽到 contact_timeout。
+	sess, err := registry.Get(ctx, domain.SessionKey{ChatID: -400, UserID: 30})
+	if err != nil {
+		t.Fatalf("会话应保持等待状态: %v", err)
+	}
+	if sess.State.Terminal() {
+		t.Fatalf("等待交互的会话不应是终态，实际 %s", sess.State)
+	}
+	if got := time.Until(sess.ExpiresAt); got < 14*time.Minute {
+		t.Fatalf("等待交互的时间窗应按 contact_timeout（默认 15 分钟）放宽，实际剩余 %v", got)
+	}
+}
+
+// TestOnBotContactResendsChallenge 验证用户按下「开始」后重新私聊出题。
+func TestOnBotContactResendsChallenge(t *testing.T) {
+	svc, api, _, _ := testService(t, nil)
+	ctx := context.Background()
+	enableRequestMode(t, svc, -400)
+	api.challengeErr = errors.New("Bad Request: bot can't initiate conversation with a user")
+	if err := svc.OnJoinRequest(ctx, JoinRequest{
+		ChatID: -400, UserID: 30, UserChatID: 30, DisplayName: "申请者", UpdateID: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	notice := api.texts[0]
+	payload := notice.urls[0][strings.Index(notice.urls[0], "?start=")+len("?start="):]
+
+	// 用户点了机器人按「开始」：这次私聊能发出去。
+	api.challengeErr = nil
+	if err := svc.OnBotContact(ctx, 30, "申请者", payload); err != nil {
+		t.Fatalf("处理 /start 失败: %v", err)
+	}
+	if len(api.challenges) != 1 {
+		t.Fatalf("应当重新出一道题，实际 %+v", api.challenges)
+	}
+	if api.challenges[0].chatID != 30 {
+		t.Fatalf("题目应私聊发给他（chatID=30），实际 %d", api.challenges[0].chatID)
+	}
+	// 群里那条提示要被删掉，别一直挂着。
+	if len(api.deleted) == 0 || api.deleted[0].message != notice.message {
+		t.Fatalf("应当删掉群里的提示消息，实际 %+v", api.deleted)
+	}
+}
+
+// TestOnBotContactRejectsWrongUser 验证 payload 被转发给别人时不会替他人验证。
+func TestOnBotContactRejectsWrongUser(t *testing.T) {
+	svc, api, _, _ := testService(t, nil)
+	ctx := context.Background()
+	enableRequestMode(t, svc, -400)
+	api.challengeErr = errors.New("Bad Request: bot can't initiate conversation with a user")
+	if err := svc.OnJoinRequest(ctx, JoinRequest{
+		ChatID: -400, UserID: 30, UserChatID: 30, DisplayName: "申请者", UpdateID: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	payload := api.texts[0].urls[0][strings.Index(api.texts[0].urls[0], "?start=")+len("?start="):]
+
+	api.challengeErr = nil
+	// 另一个人（user 77）拿着同一条链接按开始：应当被忽略。
+	if err := svc.OnBotContact(ctx, 77, "路人", payload); err != nil {
+		t.Fatalf("不应报错，只应忽略: %v", err)
+	}
+	if len(api.challenges) != 0 {
+		t.Fatalf("不能替他人验证，实际 %+v", api.challenges)
+	}
+}
+
 // TestAdWordRejectsNewMember 验证昵称命中广告词时直接封禁且不出题。
 func TestAdWordRejectsNewMember(t *testing.T) {
 	svc, api, _, _ := testService(t, func(cfg *config.Config) {
@@ -719,6 +844,45 @@ func TestAdWordRejectsNewMember(t *testing.T) {
 	}
 	if len(api.banned) != 1 || api.banned[0].userID != 8 {
 		t.Fatalf("广告号应当被直接封禁，实际 %+v", api.banned)
+	}
+	// 默认 30 天临时封禁：广告号很快被注销，永久封禁会让黑名单无限膨胀。
+	until := api.banned[0].until
+	want := time.Now().Add(30 * 24 * time.Hour).Unix()
+	if until < want-120 || until > want+120 {
+		t.Fatalf("广告词封禁应为 30 天后到期（约 %d），实际 %d", want, until)
+	}
+}
+
+// TestAdWordBanCanBePermanent 验证 ad_word_ban_days=0 时回到永久封禁。
+func TestAdWordBanCanBePermanent(t *testing.T) {
+	svc, api, _, _ := testService(t, func(cfg *config.Config) {
+		cfg.AdFilter.GlobalWords = []string{"代肝"}
+		cfg.Gatekeeper.AdWordBanDays = 0
+	})
+	if err := svc.OnMembersJoinedWithJoinMessage(context.Background(), -100, 1,
+		[]Member{{UserID: 8, DisplayName: "专业代肝"}}, domain.MessageRef{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.banned) != 1 {
+		t.Fatalf("广告号应当被封禁，实际 %+v", api.banned)
+	}
+	if api.banned[0].until != 0 {
+		t.Fatalf("ad_word_ban_days=0 应为永久封禁（until=0），实际 %d", api.banned[0].until)
+	}
+}
+
+// TestAdBanUntil 覆盖到期时间的边界。
+func TestAdBanUntil(t *testing.T) {
+	if got := adBanUntil(0); got != 0 {
+		t.Fatalf("0 天应表示永久（0），实际 %d", got)
+	}
+	if got := adBanUntil(-5); got != 0 {
+		t.Fatalf("负数应表示永久（0），实际 %d", got)
+	}
+	got := adBanUntil(7)
+	want := time.Now().Add(7 * 24 * time.Hour).Unix()
+	if got < want-60 || got > want+60 {
+		t.Fatalf("7 天封禁的到期时间应在 %d 附近，实际 %d", want, got)
 	}
 }
 

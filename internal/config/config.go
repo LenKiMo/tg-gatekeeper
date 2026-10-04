@@ -122,6 +122,16 @@ type Gatekeeper struct {
 	BotMemberPolicy       string `yaml:"bot_member_policy"`     // allow | verify
 	AdminMemberPolicy     string `yaml:"admin_member_policy"`   // allow | verify
 	RevokeMessagesOnBan   bool   `yaml:"revoke_messages_on_ban"`
+	// AdWordBanDays 是广告词命中的封禁天数；0 表示永久封禁。
+	// 广告号通常很快就被注销丢弃，临时封禁可以避免群黑名单无限膨胀。
+	AdWordBanDays int `yaml:"ad_word_ban_days"`
+	// CaptionContact 是申请模式下"用户还没和机器人交互过"时，发在群里的提示文案。
+	// 支持 {mention}；机器人无法主动私聊没点过它的用户，只能请对方先点一下。
+	CaptionContact string `yaml:"caption_contact"`
+	// ContactButton 是上面那条提示的按钮文字（按钮链接到机器人 + 会话 ID）。
+	ContactButton string `yaml:"contact_button"`
+	// ContactTimeoutSeconds 是等待对方与机器人交互的时间窗（秒）。
+	ContactTimeoutSeconds int `yaml:"contact_timeout_seconds"`
 	// DeleteJoinMessage 为 true 时，验证结束后连"XX 加入群组"服务消息一起删掉。
 	// 注意：自己点邀请链接入群时 Telegram 根本不产生这条服务消息。
 	DeleteJoinMessage bool `yaml:"delete_join_message"`
@@ -365,6 +375,10 @@ func Default() *Config {
 			BotMemberPolicy:       "allow",
 			AdminMemberPolicy:     "allow",
 			RevokeMessagesOnBan:   true,
+			AdWordBanDays:         30,
+			CaptionContact:        "{mention}，请先点开机器人并按「开始」，验证题目会私聊发给你。",
+			ContactButton:         "打开机器人",
+			ContactTimeoutSeconds: 900,
 			DeleteJoinMessage:     true,
 			BlockPendingMessages:  true,
 			AnswerWrongAlert:      true,
@@ -590,6 +604,9 @@ func (c *Config) Validate() error {
 	case "uniform", "same_group", "difficulty_band":
 	default:
 		return errors.New("gatekeeper.difficulty.strategy 只能是 uniform/same_group/difficulty_band")
+	}
+	if c.Gatekeeper.AdWordBanDays < 0 || c.Gatekeeper.AdWordBanDays > 3650 {
+		return fmt.Errorf("gatekeeper.ad_word_ban_days 必须在 0..3650（0 = 永久），当前 %d", c.Gatekeeper.AdWordBanDays)
 	}
 	if c.Gatekeeper.OptionCount < 2 || c.Gatekeeper.OptionCount > 20 {
 		return fmt.Errorf("gatekeeper.option_count 必须在 2..20，当前 %d", c.Gatekeeper.OptionCount)
@@ -831,6 +848,14 @@ func (c *Config) VerifyTimeout() time.Duration {
 
 // Band 返回难度带（供 difficulty_band 策略使用）。
 func (d Difficulty) Band() int { return d.DifficultyBand }
+
+// ContactTimeout 返回"等对方先与机器人交互"的时间窗。
+func (c *Config) ContactTimeout() time.Duration {
+	if c.Gatekeeper.ContactTimeoutSeconds <= 0 {
+		return 15 * time.Minute
+	}
+	return time.Duration(c.Gatekeeper.ContactTimeoutSeconds) * time.Second
+}
 
 // KickUnbanAfter 返回临时踢出后的解封延迟。
 func (c *Config) KickUnbanAfter() time.Duration {

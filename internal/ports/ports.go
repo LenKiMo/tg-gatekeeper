@@ -206,10 +206,11 @@ type Audit interface {
 
 // ---------------------------------------------------------------- Telegram
 
-// Button 是一个内联按钮。
+// Button 是一个内联按钮。Data 是回调数据；URL 非空时是链接按钮（二者只用一个）。
 type Button struct {
 	Text string
 	Data string
+	URL  string
 }
 
 // ButtonGrid 是按钮布局（行 × 列）。
@@ -222,7 +223,8 @@ func (g ButtonGrid) Empty() bool { return len(g) == 0 }
 type Telegram interface {
 	RestrictNoMessages(ctx context.Context, chatID, userID int64) error
 	RestorePermissions(ctx context.Context, chatID, userID int64) error
-	Ban(ctx context.Context, chatID, userID int64, revokeMessages bool) error
+	// Ban 封禁成员。until 是解禁时间（unix 秒），0 表示永久封禁。
+	Ban(ctx context.Context, chatID, userID int64, revokeMessages bool, until int64) error
 	Unban(ctx context.Context, chatID, userID int64, onlyIfBanned bool) error
 	ApproveJoinRequest(ctx context.Context, chatID, userID int64) error
 	DeclineJoinRequest(ctx context.Context, chatID, userID int64) error

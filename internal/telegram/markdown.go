@@ -91,11 +91,12 @@ func OptionKeyboard(options []domain.Option, columns int, sessionID string) port
 	return grid
 }
 
-// AdminRow 管理员处置键（一行两个）：封禁在前、放行在后。
+// AdminRow 管理员处置键（一行两个）：放行在左、封禁在右下角。
+// 危险动作放右下角，避免误触。
 func AdminRow(sessionID string) []ports.Button {
 	return []ports.Button{
-		{Text: "🚫 封禁", Data: EncodeAdmin(sessionID, true)},
 		{Text: "✅ 放行", Data: EncodeAdmin(sessionID, false)},
+		{Text: "🚫 封禁", Data: EncodeAdmin(sessionID, true)},
 	}
 }
 

@@ -335,8 +335,25 @@ func (r *Router) handleMessage(u tgbotapi.Update) error {
 		return nil
 	}
 
-	// 私聊：本 bot 只在私聊里走"申请验证出题"，其余私聊消息一律忽略。
+	// 私聊：只处理 /start <会话ID>。
+	//
+	// 申请模式下，用户没点过机器人之前机器人无法主动私聊他；群里会贴一条带
+	// ?start=<会话ID> 的提示，用户按下「开始」后就走这条路径重新出题。
+	// 其余私聊消息一律忽略。
 	if m.Chat.IsPrivate() {
+		if !m.IsCommand() {
+			return nil
+		}
+		cmd, payload := splitCommand(telegram.TextWithLinks(m))
+		if cmd != "/start" {
+			return nil
+		}
+		key := ports.DispatchKey{ChatID: m.Chat.ID, UserID: userID}
+		if err := r.dispatch.Submit(context.Background(), ports.LaneCritical, key, func(ctx context.Context) error {
+			return r.svc.OnBotContact(ctx, userID, displayName, payload)
+		}); err != nil {
+			return nil
+		}
 		return nil
 	}
 	if !m.Chat.IsGroup() && !m.Chat.IsSuperGroup() {
@@ -382,6 +399,22 @@ func (r *Router) handleMessage(u tgbotapi.Update) error {
 		return nil
 	}
 	return nil
+}
+
+// splitCommand 把 "/start abc" 拆成命令与参数；"/start@SomeBot abc" 也能处理。
+func splitCommand(text string) (cmd, payload string) {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) == 0 {
+		return "", ""
+	}
+	cmd = fields[0]
+	if i := strings.Index(cmd, "@"); i > 0 {
+		cmd = cmd[:i]
+	}
+	if len(fields) > 1 {
+		payload = fields[1]
+	}
+	return cmd, payload
 }
 
 // criticalCtx 给关键任务一个比"进程退出"更细的取消边界：

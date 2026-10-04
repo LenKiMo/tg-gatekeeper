@@ -144,7 +144,7 @@ func (s *Service) doEffect(ctx context.Context, ef domain.Effect) error {
 	case domain.EffectRestorePermissions:
 		return s.api.RestorePermissions(ctx, chatID, userID)
 	case domain.EffectBan:
-		return s.api.Ban(ctx, chatID, userID, p["revoke"] == "1")
+		return s.api.Ban(ctx, chatID, userID, p["revoke"] == "1", ParseInt(p["until"]))
 	case domain.EffectUnban:
 		return s.api.Unban(ctx, chatID, userID, true)
 	case domain.EffectApprove:

@@ -82,6 +82,40 @@ func TestAdFilterGroupWords(t *testing.T) {
 	}
 }
 
+// TestAdFilterCatchesObservedSpamNames 用线上真实出现过的广告昵称做回归。
+//
+// 这些词都进了生产群的 ad_words（命中即临时封禁 30 天），因此必须确认
+// 真正的广告号会被拦下、而正常昵称不会被误伤。
+func TestAdFilterCatchesObservedSpamNames(t *testing.T) {
+	// 生产群 ad_words 的代表性子集（完整列表在部署配置里）。
+	f := testFilter("代肝", "代充", "代练", "加V", "加微", "加微信", "博彩", "棋牌",
+		"六合彩", "澳门", "赌场", "娱乐城", "菠菜", "开云", "亚博", "太阳城",
+		"首存", "彩金", "包赢", "稳赚", "主页有群")
+
+	spam := []string{
+		"鸿运六合彩主页有群",  // 线上实拍：入群时就是这个昵称
+		"澳门赌场上分找我",   // 赌场引流
+		"加V: aaa123", // 引流小号
+		"太阳城 首存送彩金",  // 赌博站
+		"专业代　练",      // 全角空格绕过（过滤前会做 NFKC + 去空白）
+	}
+	for _, name := range spam {
+		if word, hit := f.Check(name, nil); !hit {
+			t.Errorf("广告昵称 %q 应当被拦截", name)
+		} else {
+			t.Logf("命中 %q → 词 %q", name, word)
+		}
+	}
+
+	// 正常玩家昵称不能被误伤（临时封禁也是封 30 天，误伤代价不小）。
+	normal := []string{"终末地玩家", "卡缪", "管理员小助手", "漠伦", "凯尔希的狗"}
+	for _, name := range normal {
+		if word, hit := f.Check(name, nil); hit {
+			t.Errorf("正常昵称 %q 不应被拦截（命中词 %q）", name, word)
+		}
+	}
+}
+
 // TestAdFilterDisabled 关闭后一律放行。
 func TestAdFilterDisabled(t *testing.T) {
 	cfg := config.Default().AdFilter

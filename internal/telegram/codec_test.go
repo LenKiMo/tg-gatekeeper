@@ -200,14 +200,14 @@ func TestAdminKeyboard(t *testing.T) {
 	if len(grid) != 1 || len(grid[0]) != 2 {
 		t.Fatalf("管理员按钮布局异常: %+v", grid)
 	}
-	// 顺序：封禁在前、放行在后（与运营看到的一致）。
-	ban, err := Decode(grid[0][0].Data)
-	if err != nil || ban.Kind != CallbackAdminBan || ban.SessionID != sessionID {
-		t.Fatalf("封禁按钮异常: %+v err=%v", ban, err)
-	}
-	pass, err := Decode(grid[0][1].Data)
+	// 顺序：放行在左、封禁在右下角（危险动作放右下角，避免误触）。
+	pass, err := Decode(grid[0][0].Data)
 	if err != nil || pass.Kind != CallbackAdminPass || pass.SessionID != sessionID {
 		t.Fatalf("放行按钮异常: %+v err=%v", pass, err)
+	}
+	ban, err := Decode(grid[0][1].Data)
+	if err != nil || ban.Kind != CallbackAdminBan || ban.SessionID != sessionID {
+		t.Fatalf("封禁按钮异常: %+v err=%v", ban, err)
 	}
 }
 
@@ -226,7 +226,7 @@ func TestChallengeKeyboardAppendsAdminRow(t *testing.T) {
 	if len(grid) != 3 { // 2 行选项 + 1 行管理员键
 		t.Fatalf("题目键盘行数应为 3，实际 %d: %+v", len(grid), grid)
 	}
-	if len(grid[2]) != 2 || grid[2][0].Text != "🚫 封禁" || grid[2][1].Text != "✅ 放行" {
+	if len(grid[2]) != 2 || grid[2][0].Text != "✅ 放行" || grid[2][1].Text != "🚫 封禁" {
 		t.Fatalf("末行应为管理员键，实际 %+v", grid[2])
 	}
 	// 选项行仍然是答案回调
@@ -239,7 +239,7 @@ func TestChallengeKeyboardAppendsAdminRow(t *testing.T) {
 		}
 	}
 	// 管理员行不是答案回调（否则谁点"封禁"就可能被当成答题）
-	cb, err := Decode(grid[2][0].Data)
+	cb, err := Decode(grid[2][1].Data)
 	if err != nil || cb.Kind != CallbackAdminBan {
 		t.Fatalf("末行应是管理员回调: %+v err=%v", cb, err)
 	}

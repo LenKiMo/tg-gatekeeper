@@ -129,3 +129,21 @@ func TestMatchAcceptsJoinServiceMessageWithoutSender(t *testing.T) {
 		})
 	}
 }
+
+// TestSplitCommandParsing 覆盖私聊 /start 的解析（payload 是会话 ID）。
+func TestSplitCommandParsing(t *testing.T) {
+	cases := []struct {
+		in, cmd, payload string
+	}{
+		{"/start", "/start", ""},
+		{"/start abc123", "/start", "abc123"},
+		{"/start@GatekeeperBot abc123", "/start", "abc123"},
+		{"  /start   abc123  ", "/start", "abc123"},
+	}
+	for _, c := range cases {
+		cmd, payload := splitCommand(c.in)
+		if cmd != c.cmd || payload != c.payload {
+			t.Fatalf("splitCommand(%q) = (%q,%q)，期望 (%q,%q)", c.in, cmd, payload, c.cmd, c.payload)
+		}
+	}
+}

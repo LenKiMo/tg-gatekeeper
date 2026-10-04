@@ -246,8 +246,11 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 			}
 		}
 		kick := func() {
+			// until=0：先永久封禁，随后由 kick_unban_after_seconds 的解封效果撤回，
+			// 效果是"踢出并允许再来一次"。
 			add(domain.EffectBan, withText(chatUser, map[string]string{
 				"revoke": boolStr(cfg.Gatekeeper.RevokeMessagesOnBan),
+				"until":  "0",
 			}), 0)
 			if cfg.KickUnbanAfter() > 0 {
 				add(domain.EffectUnban, map[string]string{
@@ -326,8 +329,10 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 			if before.Mode == domain.SessionRequest {
 				add(domain.EffectDecline, chatUser, 0)
 			}
+			// 管理员手动封禁：显式永久（until=0）。人工判断不该被自动策略改短。
 			add(domain.EffectBan, withText(chatUser, map[string]string{
 				"revoke": boolStr(cfg.Gatekeeper.RevokeMessagesOnBan),
+				"until":  "0",
 			}), 0)
 			// 管理员封禁优先于一切临时处置：撤销尚未执行的解封。
 			deleteChallenge()

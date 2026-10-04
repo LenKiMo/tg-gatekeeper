@@ -74,6 +74,9 @@ gatekeeper:
   bot_member_policy: allow         # allow | verify
   admin_member_policy: allow       # allow | verify
   revoke_messages_on_ban: true
+  # 广告词命中的封禁天数；0 = 永久封禁。广告号很快会被注销，默认给 30 天就够，
+  # 免得群的黑名单随时间无限膨胀。
+  ad_word_ban_days: 30
   answer_wrong_alert: true
   stale_callback_alert: true
   button_columns: 2
@@ -81,8 +84,13 @@ gatekeeper:
   caption_join: "欢迎 {mention}，请在 {timeout} 秒内选择与上图对应的名称。"
   caption_request: "请在 {timeout} 秒内选择与上图对应的名称。"
   # 仅申请模式使用：题目发在私聊，管理员看不到，所以群里另发一张带按钮的卡片。
-  # 入群模式的放行/封禁直接并进题目卡片的最后一行，不再另发消息。
+  # 入群模式的放行/封禁直接并进题目卡片的最后一行（放行在左、封禁在右下角）。
   admin_card_text: "用户 {mention} 正在验证，可通过下方按钮放行或封禁。"
+  # 申请模式专用：申请人从没和机器人说过话时，Telegram 不允许机器人主动私聊他。
+  # 这时群里发下面这条提示，让他先点开机器人；按下「开始」后再私聊出题。
+  caption_contact: "{mention}，请先点开机器人并按「开始」，验证题目会私聊发给你。"
+  contact_button: "打开机器人"
+  contact_timeout_seconds: 900
   # 验证结束后是否连"XX 加入群组"服务消息一起删掉。
   # 注意：用户自己点邀请链接入群时，Telegram 根本不产生这条服务消息。
   delete_join_message: true
