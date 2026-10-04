@@ -27,6 +27,7 @@ type apiCall struct {
 	userID  int64
 	message int64
 	text    string
+	buttons int // 按钮个数（管理员卡片刻画放行/封禁）
 }
 
 type fakeAPI struct {
@@ -95,9 +96,13 @@ func (f *fakeAPI) SendChallenge(_ context.Context, chatID int64, _ ports.Resolve
 	return domain.MessageRef{ChatID: chatID, MessageID: id}, nil
 }
 
-func (f *fakeAPI) SendText(_ context.Context, chatID int64, text string, _ bool, _ ports.ButtonGrid) (domain.MessageRef, error) {
+func (f *fakeAPI) SendText(_ context.Context, chatID int64, text string, _ bool, buttons ports.ButtonGrid) (domain.MessageRef, error) {
 	id := f.next()
-	f.texts = append(f.texts, apiCall{name: "text", chatID: chatID, message: id, text: text})
+	count := 0
+	for _, row := range buttons {
+		count += len(row)
+	}
+	f.texts = append(f.texts, apiCall{name: "text", chatID: chatID, message: id, text: text, buttons: count})
 	return domain.MessageRef{ChatID: chatID, MessageID: id}, nil
 }
 
@@ -246,6 +251,124 @@ func runBackground(t *testing.T, svc *Service) {
 
 // ---------------------------------------------------------------- 测试
 
+// welcomeOf 取出欢迎语。
+//
+// 普通入群模式现在也会发"管理员处置卡片"，它同样走 SendText，所以欢迎语不一定是 texts[0]。
+func welcomeOf(t *testing.T, api *fakeAPI) string {
+	t.Helper()
+	for _, x := range api.texts {
+		if x.buttons == 0 && strings.Contains(x.text, "欢迎") {
+			return x.text
+		}
+	}
+	t.Fatalf("没有找到欢迎语，实际 %+v", api.texts)
+	return ""
+}
+
+// TestJoinModeSendsAdminCardWithButtons 验证普通入群模式也会发管理员处置卡片
+// （含放行/封禁按钮，并带上入群者提及）——管理员否则只能在 1000 人群里猜是谁在验证。
+func TestJoinModeSendsAdminCardWithButtons(t *testing.T) {
+	svc, api, _, _ := testService(t, func(cfg *config.Config) {
+		cfg.Gatekeeper.AdminCardText = "用户 {mention} 正在验证，请放行或封禁。"
+	})
+	ctx := context.Background()
+	if err := svc.OnMembersJoined(ctx, -100, 1, []Member{{UserID: 7, DisplayName: "新人"}}); err != nil {
+		t.Fatalf("处理入群失败: %v", err)
+	}
+	if len(api.texts) != 1 {
+		t.Fatalf("应当发出 1 张管理员卡片，实际 %d 张", len(api.texts))
+	}
+	card := api.texts[0]
+	if card.buttons != 2 {
+		t.Fatalf("管理员卡片应带 2 个按钮（放行/封禁），实际 %d", card.buttons)
+	}
+	if !strings.Contains(card.text, "新人") || !strings.Contains(card.text, "tg://user?id=7") {
+		t.Fatalf("卡片应带上入群者提及，实际 %q", card.text)
+	}
+}
+
+// TestJoinModeAdminCardCanBeDisabled 验证关掉开关后不再发卡片。
+func TestJoinModeAdminCardCanBeDisabled(t *testing.T) {
+	svc, api, _, _ := testService(t, func(cfg *config.Config) {
+		cfg.Gatekeeper.AdminCardInJoin = false
+	})
+	if err := svc.OnMembersJoined(context.Background(), -100, 1,
+		[]Member{{UserID: 7, DisplayName: "新人"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.texts) != 0 {
+		t.Fatalf("关闭 admin_card_in_join 后不应发卡片，实际 %+v", api.texts)
+	}
+}
+
+// TestJoinModeAdminPassUnblocks 验证入群模式下管理员点"放行"能直接放行并发欢迎语。
+func TestJoinModeAdminPassUnblocks(t *testing.T) {
+	svc, api, registry, _ := testService(t, func(cfg *config.Config) {
+		cfg.GroupDefaults.Welcome = "欢迎{mention}"
+	})
+	ctx := context.Background()
+	if err := svc.OnMembersJoined(ctx, -100, 1, []Member{{UserID: 7, DisplayName: "新人"}}); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := registry.Get(ctx, domain.SessionKey{ChatID: -100, UserID: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 管理员（user 99）点放行：注意判定不依赖"是不是本人"。
+	api.admins[99] = true
+	if err := svc.OnCallback(ctx, CallbackEvent{
+		ID: "cb-admin", ChatID: -100, UserID: 99, DisplayName: "管理",
+		Data: telegram.EncodeAdmin(sess.ID, false),
+	}); err != nil {
+		t.Fatalf("管理员放行失败: %v", err)
+	}
+	runBackground(t, svc)
+	if len(api.restored) != 1 {
+		t.Fatalf("放行后应恢复权限，实际 %+v", api.restored)
+	}
+	if got := welcomeOf(t, api); !strings.Contains(got, "欢迎") {
+		t.Fatalf("放行后应发欢迎语，实际 %+v", api.texts)
+	}
+	// 终态会话已从"活动索引"里摘除（MemRegistry 的行为），用 GetByID 读回来核对状态。
+	after, err := registry.GetByID(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != domain.StateAdminPass {
+		t.Fatalf("会话状态应为 admin_pass，实际 %s", after.State)
+	}
+}
+
+// TestDeleteJoinMessageSwitch 验证开关关闭后不再删"XX 加入群组"服务消息。
+func TestDeleteJoinMessageSwitch(t *testing.T) {
+	svc, api, registry, _ := testService(t, func(cfg *config.Config) {
+		cfg.Gatekeeper.DeleteJoinMessage = false
+	})
+	ctx := context.Background()
+	join := domain.MessageRef{ChatID: -100, MessageID: 900}
+	if err := svc.OnMembersJoinedWithJoinMessage(ctx, -100, 1,
+		[]Member{{UserID: 7, DisplayName: "新人"}}, join); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := registry.Get(ctx, domain.SessionKey{ChatID: -100, UserID: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 答对 → 终态 → 应当只删题目消息，不删入群消息。
+	if err := svc.OnCallback(ctx, CallbackEvent{
+		ID: "cb-keep", ChatID: -100, UserID: 7, DisplayName: "新人",
+		Data: telegram.EncodeAnswer(sess.ID, correctToken(t, sess)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runBackground(t, svc)
+	for _, d := range api.deleted {
+		if d.message == join.MessageID {
+			t.Fatalf("关闭 delete_join_message 后不应删入群消息，实际删了 %+v", api.deleted)
+		}
+	}
+}
+
 // TestWelcomeNicknameAndRulesLink 覆盖欢迎语的两个真实问题：
 //  1. {mention} 必须用入群时记录的真实昵称（不能用占位文字"新成员"）；
 //  2. 群规消息存在、且模板没自带链接时，追加的是一条 MarkdownV2 链接（可点击）。
@@ -279,10 +402,7 @@ func TestWelcomeNicknameAndRulesLink(t *testing.T) {
 		t.Fatalf("答题失败: %v", err)
 	}
 	runBackground(t, svc) // Claim 只把副作用写进 outbox，跑一次 worker 才真正发送
-	if len(api.texts) == 0 {
-		t.Fatal("应当发送欢迎语")
-	}
-	got := api.texts[0].text
+	got := welcomeOf(t, api)
 	if !strings.Contains(got, "漠伦") || !strings.Contains(got, "tg://user?id=7") {
 		t.Fatalf("欢迎语应包含真实昵称的可点击提及，实际 %q", got)
 	}
@@ -322,10 +442,7 @@ func TestWelcomeTemplateLinkIsNotDuplicated(t *testing.T) {
 		t.Fatal(err)
 	}
 	runBackground(t, svc)
-	if len(api.texts) == 0 {
-		t.Fatal("应当发送欢迎语")
-	}
-	got := api.texts[0].text
+	got := welcomeOf(t, api)
 	if n := strings.Count(got, "t.me/"); n != 1 {
 		t.Fatalf("模板自带链接时不应再追加群规链接（t.me 出现 %d 次）: %q", n, got)
 	}
@@ -426,11 +543,11 @@ func TestCorrectAnswerPasses(t *testing.T) {
 	if len(api.banned) != 0 {
 		t.Fatalf("答对不应封禁: %+v", api.banned)
 	}
-	if len(api.texts) != 1 || !bytes.Contains([]byte(api.texts[0].text), []byte("欢迎")) {
+	if got := welcomeOf(t, api); !bytes.Contains([]byte(got), []byte("欢迎")) {
 		t.Fatalf("应当发送欢迎语，实际 %+v", api.texts)
 	}
 	// 昵称必须是新成员本人：曾经因为渲染时传空字符串而退化成"新成员"占位。
-	if got := api.texts[0].text; !strings.Contains(got, "新人") || !strings.Contains(got, "tg://user?id=7") {
+	if got := welcomeOf(t, api); !strings.Contains(got, "新人") || !strings.Contains(got, "tg://user?id=7") {
 		t.Fatalf("欢迎语的提及应带上真实昵称，实际 %q", got)
 	} else if strings.Contains(got, "新成员") {
 		t.Fatalf("欢迎语不该出现占位昵称，实际 %q", got)

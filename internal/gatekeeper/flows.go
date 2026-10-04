@@ -441,8 +441,10 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 		return domain.Session{}, err
 	}
 
-	// 申请模式：额外在群里发一张管理员处置卡片。
-	if mode == domain.SessionRequest {
+	// 管理员处置卡片：申请模式必发；普通入群模式由 admin_card_in_join 控制
+	// （在 1000 人群里，管理员靠这张卡片认出是谁在验证并一键放行/封禁，
+	// 否则只能等超时自动踢）。
+	if mode == domain.SessionRequest || (mode == domain.SessionJoin && s.cfg.Gatekeeper.AdminCardInJoin) {
 		text := telegram.RenderCaption(s.cfg.Gatekeeper.AdminCardText, userID, displayName, s.cfg.Gatekeeper.TimeoutSeconds, "")
 		cardRef, err := s.api.SendText(ctx, group.ChatID, text, true, telegram.AdminKeyboard(session.ID))
 		if err == nil && cardRef.Valid() {

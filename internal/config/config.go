@@ -122,6 +122,12 @@ type Gatekeeper struct {
 	BotMemberPolicy       string `yaml:"bot_member_policy"`     // allow | verify
 	AdminMemberPolicy     string `yaml:"admin_member_policy"`   // allow | verify
 	RevokeMessagesOnBan   bool   `yaml:"revoke_messages_on_ban"`
+	// AdminCardInJoin 为 true 时，普通入群模式也会在群里发一张管理员处置卡片
+	// （放行/封禁按钮），管理员不必等超时。
+	AdminCardInJoin bool `yaml:"admin_card_in_join"`
+	// DeleteJoinMessage 为 true 时，验证结束后连"XX 加入群组"服务消息一起删掉。
+	// 注意：自己点邀请链接入群时 Telegram 根本不产生这条服务消息。
+	DeleteJoinMessage bool `yaml:"delete_join_message"`
 	// BlockPendingMessages 为 true 时，待验证用户一旦在群里发言立即按违规处置
 	// （删消息 + 踢出）。这是原实现里有钩子却从未注册的反绕过能力。
 	BlockPendingMessages bool       `yaml:"block_pending_messages"`
@@ -362,12 +368,14 @@ func Default() *Config {
 			BotMemberPolicy:       "allow",
 			AdminMemberPolicy:     "allow",
 			RevokeMessagesOnBan:   true,
+			AdminCardInJoin:       true,
+			DeleteJoinMessage:     true,
 			BlockPendingMessages:  true,
 			AnswerWrongAlert:      true,
 			ButtonColumns:         2,
 			CaptionJoin:           "欢迎 {mention}，请在 {timeout} 秒内选择与上图对应的名称。",
 			CaptionRequest:        "请在 {timeout} 秒内选择与上图对应的名称。",
-			AdminCardText:         "用户 {mention} 正在进行入群申请验证。",
+			AdminCardText:         "用户 {mention} 正在验证，可通过下方按钮放行或封禁。",
 			Difficulty:            Difficulty{Strategy: "uniform", DifficultyBand: 1},
 		},
 		Provider: Provider{

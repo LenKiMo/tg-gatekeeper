@@ -77,9 +77,15 @@ gatekeeper:
   answer_wrong_alert: true
   stale_callback_alert: true
   button_columns: 2
-  caption_join: "请在 {timeout} 秒内选择与上图对应的名称。"   # 只讲题目：欢迎语另有单独一条
+  # 题目文案：管理员看不到入群成员名单时，靠这里的 {mention} 认出"是谁在验证"。
+  caption_join: "欢迎 {mention}，请在 {timeout} 秒内选择与上图对应的名称。"
   caption_request: "请在 {timeout} 秒内选择与上图对应的名称。"
-  admin_card_text: "用户 {mention} 正在进行验证，可通过下方按钮放行或封禁。"
+  admin_card_text: "用户 {mention} 正在验证，可通过下方按钮放行或封禁。"
+  # 普通入群模式也发一张管理员处置卡片（放行/封禁按钮）；嫌吵的大群可以关掉。
+  admin_card_in_join: true
+  # 验证结束后是否连"XX 加入群组"服务消息一起删掉。
+  # 注意：用户自己点邀请链接入群时，Telegram 根本不产生这条服务消息。
+  delete_join_message: true
   difficulty:
     strategy: uniform              # uniform | same_group | difficulty_band
     difficulty_band: 1

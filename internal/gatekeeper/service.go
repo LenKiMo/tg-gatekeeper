@@ -228,7 +228,7 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 			}
 		}
 		deleteJoin := func() {
-			if before.JoinMessage.Valid() {
+			if before.JoinMessage.Valid() && cfg.Gatekeeper.DeleteJoinMessage {
 				add(domain.EffectDeleteMessage, domain.EffectPayload{
 					"chat_id":    itoa(before.JoinMessage.ChatID),
 					"message_id": itoa(before.JoinMessage.MessageID),
