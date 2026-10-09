@@ -90,7 +90,7 @@ func TestAdFilterCatchesObservedSpamNames(t *testing.T) {
 	// 生产群 ad_words 的代表性子集（完整列表在部署配置里）。
 	f := testFilter("代肝", "代充", "代练", "加V", "加微", "加微信", "博彩", "棋牌",
 		"六合彩", "澳门", "赌场", "娱乐城", "菠菜", "开云", "亚博", "太阳城",
-		"首存", "彩金", "包赢", "稳赚", "主页有群")
+		"首存", "彩金", "包赢", "稳赚", "主页有群", "私聊我", "pm我", "有意私聊")
 
 	spam := []string{
 		"鸿运六合彩主页有群",  // 线上实拍：入群时就是这个昵称
@@ -98,6 +98,8 @@ func TestAdFilterCatchesObservedSpamNames(t *testing.T) {
 		"加V: aaa123", // 引流小号
 		"太阳城 首存送彩金",  // 赌博站
 		"专业代　练",      // 全角空格绕过（过滤前会做 NFKC + 去空白）
+		"私聊我下单",      // 私聊引流 CTA
+		"有意私聊，详情群里",  // 私聊引流 CTA
 	}
 	for _, name := range spam {
 		if word, hit := f.Check(name, nil); !hit {
@@ -112,6 +114,49 @@ func TestAdFilterCatchesObservedSpamNames(t *testing.T) {
 	for _, name := range normal {
 		if word, hit := f.Check(name, nil); hit {
 			t.Errorf("正常昵称 %q 不应被拦截（命中词 %q）", name, word)
+		}
+	}
+}
+
+// TestAdFilterExemptsDisclaimerBios 免责声明式简介不该被判广告。
+//
+// 线上实拍：一位用户的简介是
+// "（未经允许发起私聊一律ban,report)私聊已默认归档静音，不会及时查看！优先共同群@"
+// ——本意是拒绝私聊，却因为词表里有裸词"私聊"被自动封禁 30 天。
+// 修法两条：裸词换成 CTA 短语（私聊我/私聊下单/pm我…）+ 否定标记紧邻豁免。
+func TestAdFilterExemptsDisclaimerBios(t *testing.T) {
+	f := testFilter("私聊我", "私我", "pm我", "私聊下单", "私聊咨询", "有意私聊", "详情私聊", "加我私聊")
+
+	disclaimer := []string{
+		"（未经允许发起私聊一律ban,report)私聊已默认归档静音，不会及时查看！优先共同群@",
+		"请勿私聊我",
+		"勿私聊我，谢谢",
+		"别私聊我",
+		"请不要私聊我",
+		"谢绝私聊我",
+		"禁止私聊我",
+		"请勿 PM 我",
+		"未经允许别私聊我",
+	}
+	for _, bio := range disclaimer {
+		if word, hit := f.Check(bio, nil); hit {
+			t.Errorf("免责声明简介 %q 不应被拦截（命中 %q）", bio, word)
+		}
+	}
+
+	cta := []string{
+		"私聊我下单",
+		"有意私聊，价格好说",
+		"详情私聊",
+		"加我私聊",
+		"pm我",
+		"谢绝砍价，私聊我下单", // 否定标记不紧邻命中词 → 仍判广告
+	}
+	for _, bio := range cta {
+		if word, hit := f.Check(bio, nil); !hit {
+			t.Errorf("引流简介 %q 应当被拦截", bio)
+		} else {
+			t.Logf("命中 %q → 词 %q", bio, word)
 		}
 	}
 }

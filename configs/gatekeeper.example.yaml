@@ -58,6 +58,8 @@ ad_filter:
   remove_whitespace: true
   remove_zero_width: true
   removable_separators: ["-", "_", ".", "·"]
+  # 免责声明豁免：命中词紧邻下列否定标记时不算广告（"请勿私聊我"不会被当成私聊引流）。
+  negation_words: ["请勿", "切勿", "勿", "别", "不要", "禁止", "谢绝", "拒绝", "未经"]
   bio_lookup_error_policy: audit_continue   # audit_continue | deny
   match_mode: contains
 

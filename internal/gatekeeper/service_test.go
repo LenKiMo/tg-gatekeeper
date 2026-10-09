@@ -45,6 +45,8 @@ type fakeAPI struct {
 	texts      []apiCall
 	tags       []apiCall
 	bioErr     error
+	// bios 是每个用户的简介（广告词过滤读它）；缺省为空。
+	bios map[int64]string
 	// challengeErr 非 nil 时，SendChallenge 直接失败——用来模拟申请模式下
 	// "用户没点过机器人，Telegram 不允许主动私聊"。
 	challengeErr error
@@ -145,7 +147,7 @@ func (f *fakeAPI) GetBio(_ context.Context, userID int64) (string, error) {
 	if f.bioErr != nil {
 		return "", f.bioErr
 	}
-	return "", nil
+	return f.bios[userID], nil
 }
 
 func (f *fakeAPI) IsAdminWithPermissions(_ context.Context, _ int64, userID int64, _ uint16) (bool, error) {
@@ -935,6 +937,55 @@ func TestAdWordRejectsNewMember(t *testing.T) {
 	want := time.Now().Add(30 * 24 * time.Hour).Unix()
 	if until < want-120 || until > want+120 {
 		t.Fatalf("广告词封禁应为 30 天后到期（约 %d），实际 %d", want, until)
+	}
+}
+
+// TestAdFilterExemptsDisclaimerBioAtJoin 线上实拍：被自动封禁的用户，其简介是
+// 免责声明——"（未经允许发起私聊一律ban,report)私聊已默认归档静音，不会及时查看！
+// 优先共同群@"，本意是拒绝私聊，却撞上了词表里的裸词"私聊"。入群预检必须放行并照常出题。
+//
+// 词表用生产群的真实值（裸词已换成引流 CTA 短语），昵称/简介都走 flows 里的同一路径。
+func TestAdFilterExemptsDisclaimerBioAtJoin(t *testing.T) {
+	const disclaimer = "（未经允许发起私聊一律ban,report)私聊已默认归档静音，不会及时查看！优先共同群@"
+	prodWords := []string{"代肝", "代充", "代练", "加V", "加微", "加微信", "加QQ", "私聊我", "私我", "pm我",
+		"私聊下单", "私聊咨询", "私聊了解", "私聊进群", "有意私聊", "详情私聊", "加我私聊",
+		"点击链接", "免费领取", "博彩", "棋牌", "六合彩", "澳门", "赌场", "娱乐城", "菠菜",
+		"开云", "亚博", "太阳城", "首存", "彩金", "包赢", "稳赚", "主页有群"}
+	svc, api, _, _ := testService(t, func(cfg *config.Config) {
+		cfg.AdFilter.GlobalWords = prodWords
+	})
+	ctx := context.Background()
+	api.bios = map[int64]string{
+		8:  disclaimer,   // 被封用户的真实简介
+		9:  "请勿私聊我，社恐",   // 免责声明型
+		10: "私聊我下单，价格美丽", // 真引流
+	}
+
+	// 免责声明简介：放行 + 出题，绝不封禁。
+	for _, userID := range []int64{8, 9} {
+		if err := svc.OnMembersJoinedWithJoinMessage(ctx, -100, 1,
+			[]Member{{UserID: userID, DisplayName: "Midnight"}}, domain.MessageRef{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(api.banned) != 0 {
+		t.Fatalf("免责声明式简介不应被封禁，实际 %+v", api.banned)
+	}
+	if len(api.challenges) != 2 {
+		t.Fatalf("应当照常出两道题，实际 %d 道", len(api.challenges))
+	}
+
+	// 对照组：真引流简介仍然封禁、不出题。
+	api.banned, api.challenges = nil, nil
+	if err := svc.OnMembersJoinedWithJoinMessage(ctx, -100, 1,
+		[]Member{{UserID: 10, DisplayName: "福利小号"}}, domain.MessageRef{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.banned) != 1 || api.banned[0].userID != 10 {
+		t.Fatalf("引流 CTA 简介应当被封禁，实际 %+v", api.banned)
+	}
+	if len(api.challenges) != 0 {
+		t.Fatalf("被封的广告号不应收到验证题，实际 %d 道", len(api.challenges))
 	}
 }
 

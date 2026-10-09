@@ -3,6 +3,10 @@
 // 归一化比"标签归一化"更激进：广告投放者会用全角、零宽字符、空格和分隔符来绕过
 // 关键词。这里先做 NFKC，再去零宽字符、去空白、去可配置分隔符，最后大小写折叠，
 // 然后做子串匹配（首版不做正则，避免运维写出回溯炸弹）。
+//
+// 免责声明豁免：简介里写"请勿私聊我""未经允许别私聊我"的用户，本意是拒绝私聊，
+// 却会撞上私聊类广告词（私聊我/私聊下单/pm我），被当成广告号封禁。因此命中词
+// 紧邻否定标记时跳过这一处命中——只认紧邻，中间隔了别的字仍判广告。
 package filter
 
 import (
@@ -16,8 +20,9 @@ import (
 
 // AdFilter 是广告词过滤器。
 type AdFilter struct {
-	cfg    config.AdFilter
-	global []string
+	cfg      config.AdFilter
+	global   []string
+	negation []string
 }
 
 // New 构造过滤器；空词会被忽略（空词匹配一切，是危险的配置）。
@@ -26,6 +31,11 @@ func New(cfg config.AdFilter) *AdFilter {
 	for _, w := range cfg.GlobalWords {
 		if norm2(w, cfg) != "" {
 			f.global = append(f.global, w)
+		}
+	}
+	for _, m := range cfg.NegationWords {
+		if n := norm2(m, cfg); n != "" {
+			f.negation = append(f.negation, n)
 		}
 	}
 	return f
@@ -42,13 +52,13 @@ func (f *AdFilter) Check(text string, groupWords []string) (string, bool) {
 		return "", false
 	}
 	for _, w := range f.global {
-		if n := norm2(w, f.cfg); n != "" && strings.Contains(hay, n) {
+		if f.matches(hay, w) {
 			return w, true
 		}
 	}
 	if f.cfg.IncludeGroupWords {
 		for _, w := range groupWords {
-			if n := norm2(w, f.cfg); n != "" && strings.Contains(hay, n) {
+			if f.matches(hay, w) {
 				return w, true
 			}
 		}
@@ -58,6 +68,49 @@ func (f *AdFilter) Check(text string, groupWords []string) (string, bool) {
 
 // Words 返回生效的全局广告词数量（供启动日志）。
 func (f *AdFilter) Words() int { return len(f.global) }
+
+// matches 判断归一化文本里是否存在未被免责声明豁免的命中。
+// 一处被豁免不代表整条文本放行：继续找后面是否还有真正的 CTA。
+func (f *AdFilter) matches(hay, word string) bool {
+	n := norm2(word, f.cfg)
+	if n == "" {
+		return false
+	}
+	for idx := 0; idx < len(hay); {
+		i := strings.Index(hay[idx:], n)
+		if i < 0 {
+			return false
+		}
+		pos := idx + i
+		if !f.negated(hay, pos) {
+			return true
+		}
+		idx = pos + len(n)
+	}
+	return false
+}
+
+// negationWindow 是紧邻命中词之前参与否定判断的字节数（标记最长 2 字，留足余量）。
+const negationWindow = 12
+
+// negated 判断 pos 处的命中是否紧跟在否定标记之后。
+// 只认紧邻：中间隔了别的字就不算（"谢绝砍价，私聊我" 仍判广告）。
+func (f *AdFilter) negated(hay string, pos int) bool {
+	if pos <= 0 || len(f.negation) == 0 {
+		return false
+	}
+	start := pos - negationWindow
+	if start < 0 {
+		start = 0
+	}
+	window := hay[start:pos]
+	for _, m := range f.negation {
+		if strings.HasSuffix(window, m) {
+			return true
+		}
+	}
+	return false
+}
 
 // norm2 按配置做归一化。
 func norm2(s string, cfg config.AdFilter) string {

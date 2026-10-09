@@ -99,6 +99,7 @@ type AdFilter struct {
 	RemoveWhitespace     bool     `yaml:"remove_whitespace"`
 	RemoveZeroWidth      bool     `yaml:"remove_zero_width"`
 	RemovableSeparators  []string `yaml:"removable_separators"`
+	NegationWords        []string `yaml:"negation_words"`          // 紧邻命中词前的否定标记（免责声明豁免）
 	BioLookupErrorPolicy string   `yaml:"bio_lookup_error_policy"` // audit_continue | deny
 	MatchMode            string   `yaml:"match_mode"`              // contains
 }
@@ -360,6 +361,7 @@ func Default() *Config {
 			RemoveWhitespace:     true,
 			RemoveZeroWidth:      true,
 			RemovableSeparators:  []string{"-", "_", ".", "·"},
+			NegationWords:        []string{"请勿", "切勿", "勿", "别", "不要", "禁止", "谢绝", "拒绝", "未经"},
 			BioLookupErrorPolicy: "audit_continue",
 			MatchMode:            "contains",
 		},
