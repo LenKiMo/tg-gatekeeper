@@ -342,12 +342,20 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 		}
 	}
 
-	gen := s.Generator()
-	if gen == nil {
-		return domain.Session{}, errors.New("题库尚未加载")
-	}
-	built, err := s.generate(ctx, gen, mode)
+	built, err := s.nextChallenge(ctx, mode)
 	if err != nil {
+		// 出不了题（题库为空/损坏、图片取不到）。入群模式下人已经在群里、还没被禁言、
+		// 也没有会话：直接返回就等于不经验证放行，failure_policy=deny 形同虚设。
+		// 所以在这里按失败策略处置；不建会话、不禁言，不留半成品。申请模式不用管：
+		// 人还没进群，调用方会拒绝申请。
+		if mode == domain.SessionJoin {
+			// 题库整体损坏时每个入群的人都会走到这里，单独打一条 Warn，便于发现
+			// "基础设施故障引发批量封禁"（审计里按 reason 聚合 verify.challenge_failed 即可计数）。
+			s.log.Warn("出不了题，按 failure_policy 处置新成员",
+				"chat_id", group.ChatID, "user_id", userID,
+				"failure_policy", s.cfg.Gatekeeper.FailurePolicy, "err", s.scrubToken(err.Error()))
+			s.challengeFailed(ctx, group, userID, displayName, banReasonGenerateFailed, err, false)
+		}
 		return domain.Session{}, err
 	}
 	ch := built.Challenge
@@ -436,7 +444,7 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 			Kind: domain.EventCancel, SessionID: session.ID, At: time.Now(),
 		}, nil)
 		if mode == domain.SessionJoin {
-			s.challengeFailed(ctx, group, userID, displayName, banReasonSendFailed, err)
+			s.challengeFailed(ctx, group, userID, displayName, banReasonSendFailed, err, true)
 		}
 		return domain.Session{}, fmt.Errorf("发送题目失败: %w", err)
 	}
@@ -473,18 +481,20 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 // （集中入群触发限流、网络抖动、题目文案转义写错），所以不是永久封禁，也不撤回对方的
 // 历史消息。封禁只发一次、失败不重试：目标是管理员这类封不了的人时每次都会 403，
 // 重试只会变成请求风暴。
-// allow：恢复权限，放行。
+// allow：放行；restricted 为 true 表示此前已经禁言，需要恢复权限。
 //
 // 审计只记错误分类，不记错误原文（网络错误的原文里带着含 bot token 的请求地址）。
 func (s *Service) challengeFailed(ctx context.Context, group domain.GroupConfig, userID int64,
-	displayName string, reason banReason, cause error) {
+	displayName string, reason banReason, cause error, restricted bool) {
 	ev := ports.AuditEvent{
 		Event: "verify.challenge_failed", ChatID: group.ChatID, UserID: userID,
 		Mode: string(domain.SessionJoin), DisplayName: displayName,
 		ErrorClass: classify(cause), Extra: map[string]string{"reason": string(reason)},
 	}
 	if s.cfg.Gatekeeper.FailurePolicy == "allow" {
-		_ = s.api.RestorePermissions(ctx, group.ChatID, userID)
+		if restricted {
+			_ = s.api.RestorePermissions(ctx, group.ChatID, userID)
+		}
 		ev.Result = "allow"
 		s.audit(ctx, ev)
 		return
@@ -497,6 +507,15 @@ func (s *Service) challengeFailed(ctx context.Context, group domain.GroupConfig,
 		ev.ErrorClass = classify(err)
 	}
 	s.audit(ctx, ev)
+}
+
+// nextChallenge 抽一道题并取好图片；题库还没加载、或出不了题时返回错误。
+func (s *Service) nextChallenge(ctx context.Context, mode domain.SessionMode) (*generated, error) {
+	gen := s.Generator()
+	if gen == nil {
+		return nil, errors.New("题库尚未加载")
+	}
+	return s.generate(ctx, gen, mode)
 }
 
 // generate 抽题；图片解析失败时换条目重试，避免单张坏图卡死整个验证。
@@ -701,6 +720,15 @@ func (s *Service) claimByID(ctx context.Context, sess domain.Session, ev domain.
 		return ports.ClaimResult{}, err
 	}
 	return s.registry.Claim(ctx, sess.Key, ev, s.effectPlan(group, ""))
+}
+
+// scrubToken 把文本里的 bot token 换成占位符。请求 Telegram 失败时，网络错误的原文里
+// 带着含 token 的请求地址；错误文本进日志之前先过这里。
+func (s *Service) scrubToken(text string) string {
+	if token := s.cfg.Bot.Token; token != "" {
+		text = strings.ReplaceAll(text, token, "[token]")
+	}
+	return text
 }
 
 // classify 把错误归类为便于告警的短标签。

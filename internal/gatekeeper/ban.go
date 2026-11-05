@@ -13,13 +13,15 @@ type banReason string
 const (
 	// banReasonSendFailed 题目发不出去（限流、网络、文案转义写错）。
 	banReasonSendFailed banReason = "challenge_send_failed"
+	// banReasonGenerateFailed 出不了题（题库为空/损坏、图片取不到）。
+	banReasonGenerateFailed banReason = "challenge_generate_failed"
 )
 
 // botFault 判断这次封禁是不是机器人自身故障造成的。这类封禁错不在用户，
 // 不撤回对方的历史消息。
 func (r banReason) botFault() bool {
 	switch r {
-	case banReasonSendFailed:
+	case banReasonSendFailed, banReasonGenerateFailed:
 		return true
 	}
 	return false
