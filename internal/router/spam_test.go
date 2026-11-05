@@ -94,6 +94,45 @@ func TestDetectSpam(t *testing.T) {
 			},
 			wantOK: false,
 		},
+		{
+			// 匿名管理员：from 是占位的 @GroupAnonymousBot，sender_chat 是群自身。
+			name: "匿名管理员发言不是访客机器人",
+			msg: &tgbotapi.Message{
+				MessageID: 13, Chat: &tgbotapi.Chat{ID: -100},
+				From:       &tgbotapi.User{ID: 1087968824, UserName: "GroupAnonymousBot", IsBot: true},
+				SenderChat: &tgbotapi.Chat{ID: -100},
+				Text:       "管理员公告",
+			},
+			wantOK: false,
+		},
+		{
+			// 以频道身份发言：from 是占位的 @Channel_Bot，sender_chat 是那个频道。
+			name: "以频道身份发言不是访客机器人",
+			msg: &tgbotapi.Message{
+				MessageID: 14, Chat: &tgbotapi.Chat{ID: -100},
+				From:       &tgbotapi.User{ID: 136817688, UserName: "Channel_Bot", IsBot: true},
+				SenderChat: &tgbotapi.Chat{ID: -200},
+			},
+			wantOK: false,
+		},
+		{
+			name: "占位账号即使不带 sender_chat 也不拦",
+			msg: &tgbotapi.Message{
+				MessageID: 16, Chat: &tgbotapi.Chat{ID: -100},
+				From: &tgbotapi.User{ID: 1087968824, UserName: "GroupAnonymousBot", IsBot: true},
+			},
+			wantOK: false,
+		},
+		{
+			name: "带召唤者的访客机器人即使有 sender_chat 也照拦",
+			msg: &tgbotapi.Message{
+				MessageID: 15, Chat: &tgbotapi.Chat{ID: -100},
+				From:               &tgbotapi.User{ID: 558, UserName: "ad_bot", IsBot: true},
+				SenderChat:         &tgbotapi.Chat{ID: -300},
+				GuestBotCallerUser: &tgbotapi.User{ID: 42, FirstName: "Shawn"},
+			},
+			wantOK: true, wantCause: gatekeeper.SpamReasonBotSender,
+		},
 	}
 	for _, c := range cases {
 		sig, ok := detectSpam(c.msg, self, c.allow)

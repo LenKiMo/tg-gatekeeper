@@ -43,6 +43,9 @@ func detectSpam(m *tgbotapi.Message, selfID int64, allowlist []string) (sig gate
 		if m.From.ID == selfID {
 			return gatekeeper.SpamSignal{}, false
 		}
+		if sentOnBehalfOfChat(m) {
+			return gatekeeper.SpamSignal{}, false
+		}
 		name := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(m.From.UserName), "@"))
 		if allowedBot(name, allowlist) {
 			return gatekeeper.SpamSignal{}, false
@@ -70,6 +73,25 @@ func detectSpam(m *tgbotapi.Message, selfID int64, allowlist []string) (sig gate
 		}
 	}
 	return gatekeeper.SpamSignal{}, false
+}
+
+// Telegram 的占位发送者：消息以某个会话的身份发出时，from 为了向后兼容会填成它们。
+const (
+	groupAnonymousBotID int64 = 1087968824 // @GroupAnonymousBot：匿名管理员
+	channelBotID        int64 = 136817688  // @Channel_Bot：以频道身份发言
+)
+
+// sentOnBehalfOfChat 判断这条"机器人发的"消息其实是以某个会话的身份发的：匿名管理员
+// （sender_chat 是群自身）或"以频道身份发言"（sender_chat 是那个频道）。它们的 from
+// 只是占位机器人，不是访客机器人——按访客机器人处置的话，匿名管理员的每条发言都会被删。
+//
+// 以 sender_chat 为准；占位账号 ID 作兜底，万一 sender_chat 缺失也能认出来。
+// 带召唤者（guest_bot_caller_user）的一律仍按访客机器人算。
+func sentOnBehalfOfChat(m *tgbotapi.Message) bool {
+	if m.GuestBotCallerUser != nil {
+		return false
+	}
+	return m.SenderChat != nil || m.From.ID == groupAnonymousBotID || m.From.ID == channelBotID
 }
 
 // allowedBot 判断机器人用户名是否在允许列表里。
