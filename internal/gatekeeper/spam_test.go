@@ -8,6 +8,31 @@ import (
 	"github.com/LenKiMo/tg-gatekeeper/internal/config"
 )
 
+// TestAdTextNeverEscalatesToBan 正文命中只删消息：词表是粗筛，重复命中也不升级封禁。
+func TestAdTextNeverEscalatesToBan(t *testing.T) {
+	svc, api, _, _ := testService(t, func(c *config.Config) {
+		c.AdFilter.GlobalWords = []string{"代肝"}
+		c.Moderation.AdTextAction = "delete"
+		c.Moderation.RepeatBanAfter = 2
+	})
+	sig := SpamSignal{
+		ChatID: -100, UserID: 790, DisplayName: "路人", MessageID: 51,
+		Reason: SpamReasonAdText, MatchedWord: "代肝",
+	}
+	for i := 0; i < 3; i++ {
+		sig.MessageID++
+		if err := svc.OnSpamSignal(context.Background(), sig); err != nil {
+			t.Fatalf("第 %d 次拦截失败: %v", i+1, err)
+		}
+	}
+	if len(api.deleted) != 3 {
+		t.Fatalf("三次都应删消息，实际 %+v", api.deleted)
+	}
+	if len(api.banned) != 0 {
+		t.Fatalf("正文命中不应升级封禁，实际 %+v", api.banned)
+	}
+}
+
 // TestSpamDeleteThenBanOnRepeat 覆盖默认策略：第一次只删消息（可能只是有人用 @gif），
 // 同一用户在窗口内第二次命中才升级为封禁。
 func TestSpamDeleteThenBanOnRepeat(t *testing.T) {

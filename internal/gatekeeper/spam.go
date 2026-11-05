@@ -134,7 +134,9 @@ func (s *Service) OnSpamSignal(ctx context.Context, sig SpamSignal) error {
 	}
 
 	result := action
-	if action == "delete" && s.escalate(sig) {
+	// 纯文本命中只删不封：正文词表是粗筛（"接单""出租"这类词在正常聊天里也会出现），
+	// 误删一条消息的代价远小于误封一个真人。要封就显式把 ad_text_action 设成 ban。
+	if action == "delete" && sig.Reason != SpamReasonAdText && s.escalate(sig) {
 		result = "ban"
 	}
 	// 访客机器人不是群成员，封不了（banChatMember 会报错），只删消息。
