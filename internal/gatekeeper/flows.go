@@ -126,11 +126,7 @@ func (s *Service) OnJoinRequest(ctx context.Context, req JoinRequest) error {
 		return nil
 	}
 	if word, hit := s.adFilter.Check(req.DisplayName, group.AdWords); hit {
-		s.audit(ctx, ports.AuditEvent{
-			Event: "verify.ad_rejected", ChatID: req.ChatID, UserID: req.UserID,
-			Result: "decline", Mode: string(domain.SessionRequest), Extra: map[string]string{"field": "display_name", "word": word},
-		})
-		return s.declineRequest(ctx, req.ChatID, req.UserID)
+		return s.rejectRequestByAdWord(ctx, group, req.UserID, req.DisplayName, word, "display_name")
 	}
 	if s.cfg.AdFilter.Enabled {
 		bio := req.Bio
@@ -140,11 +136,7 @@ func (s *Service) OnJoinRequest(ctx context.Context, req JoinRequest) error {
 			}
 		}
 		if word, hit := s.adFilter.Check(bio, group.AdWords); hit {
-			s.audit(ctx, ports.AuditEvent{
-				Event: "verify.ad_rejected", ChatID: req.ChatID, UserID: req.UserID,
-				Result: "decline", Mode: string(domain.SessionRequest), Extra: map[string]string{"field": "bio", "word": word},
-			})
-			return s.declineRequest(ctx, req.ChatID, req.UserID)
+			return s.rejectRequestByAdWord(ctx, group, req.UserID, req.DisplayName, word, "bio")
 		}
 	}
 
@@ -338,6 +330,14 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 				DisplayName: displayName, Mode: string(group.Mode),
 				Result: "ignored", NewState: string(cur.State),
 			})
+			// 两条入群通道的到达顺序不定。chat_member 先到时会话已经建好、没挂上入群消息；
+			// 随后到的服务消息会被当成重复信号，若就此丢掉 ref，那句"X 加入了群组"永远不删。
+			if o.joinMessage.Valid() && s.cfg.Gatekeeper.DeleteJoinMessage {
+				if derr := s.enqueueDeletion(ctx, o.joinMessage, 0); derr != nil {
+					s.log.Warn("删除重复入群信号的服务消息失败", "chat_id", group.ChatID,
+						"err", s.scrubToken(derr.Error()))
+				}
+			}
 			return domain.Session{}, nil
 		}
 	}
@@ -564,7 +564,39 @@ func adBanUntil(days int) int64 {
 	return time.Now().Add(time.Duration(days) * 24 * time.Hour).Unix()
 }
 
-// rejectByFilter 因广告词拒绝入群。
+// rejectRequestByAdWord 处置"申请模式下命中广告词"。
+//
+// 默认只拒绝申请、不封禁：申请人还没进群，封一个不在群里的人只会往群黑名单里堆东西，
+// 而广告号很快会被 Telegram 注销。要靠封禁扛住重复申请冲击的群，把
+// ad_word_request_ban_days 配成 > 0（建议 3），语义与入群模式的 ad_word_ban_days 对齐。
+func (s *Service) rejectRequestByAdWord(ctx context.Context, group domain.GroupConfig,
+	userID int64, displayName, word, field string) error {
+	days := s.cfg.Gatekeeper.AdWordRequestBanDays
+	extra := map[string]string{"field": field, "request_ban_days": itoa(int64(days))}
+	if word != "" {
+		extra["word"] = word
+	}
+	ev := ports.AuditEvent{
+		Event: "verify.ad_rejected", ChatID: group.ChatID, UserID: userID,
+		DisplayName: displayName, Mode: string(domain.SessionRequest), Extra: extra,
+	}
+	if days > 0 {
+		ev.Result = "ban"
+		if err := s.applyTempBan(ctx, group, userID, int64(days)*86400, banReasonAdRequest); err != nil {
+			ev.Result = "ban_failed"
+			ev.ErrorClass = classify(err)
+		}
+	} else {
+		ev.Result = "decline"
+	}
+	s.audit(ctx, ev)
+	return s.declineRequest(ctx, group.ChatID, userID)
+}
+
+// rejectByFilter 处置"已进群/正在入群的人命中广告词"：封禁 ad_word_ban_days 天。
+//
+// 只走入群模式；申请模式在 OnJoinRequest 里单独处置（见 rejectRequestByAdWord），
+// 以前这里留着的申请分支永远走不到，是死代码。
 func (s *Service) rejectByFilter(ctx context.Context, group domain.GroupConfig, m Member, word, field string) error {
 	extra := map[string]string{"field": field}
 	if word != "" {
@@ -576,13 +608,7 @@ func (s *Service) rejectByFilter(ctx context.Context, group domain.GroupConfig, 
 		Event: "verify.ad_rejected", ChatID: group.ChatID, UserID: m.UserID,
 		Result: "ban", Mode: string(group.Mode), DisplayName: m.DisplayName, Extra: extra,
 	})
-	until := adBanUntil(days)
-	if group.Mode == domain.VerifyModeRequest {
-		// 申请人还没进群：封禁（临时）+ 拒绝申请，让他这段时间内无法再申请。
-		_ = s.api.Ban(ctx, group.ChatID, m.UserID, s.cfg.Gatekeeper.RevokeMessagesOnBan, until)
-		return s.declineRequest(ctx, group.ChatID, m.UserID)
-	}
-	return s.api.Ban(ctx, group.ChatID, m.UserID, s.cfg.Gatekeeper.RevokeMessagesOnBan, until)
+	return s.api.Ban(ctx, group.ChatID, m.UserID, s.cfg.Gatekeeper.RevokeMessagesOnBan, adBanUntil(days))
 }
 
 // awaitContact 处理"申请人还没和机器人交互过，私聊发不出去"：

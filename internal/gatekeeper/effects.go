@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
+
+	tgbotapi "github.com/ijnkawakaze/telegram-bot-api"
 
 	"github.com/LenKiMo/tg-gatekeeper/internal/domain"
 	"github.com/LenKiMo/tg-gatekeeper/internal/ports"
@@ -96,14 +99,14 @@ func (s *Service) executeEffect(ctx context.Context, ef domain.Effect) {
 		s.audit(ctx, ports.AuditEvent{
 			Event: "effect.dead_letter", Effect: string(ef.Kind), SessionID: ef.SessionID,
 			Attempt: ef.Attempts + 1, Result: "dropped", ErrorClass: classify(err),
-			Extra: banAuditExtra(ef, map[string]string{"error": truncate(err.Error(), 200)}),
+			Extra: banAuditExtra(ef, map[string]string{"error": truncate(s.scrubToken(err.Error()), 200)}),
 		})
 		s.log.Error("副作用放弃重试", "effect_id", ef.ID, "kind", ef.Kind, "err", err)
 		return
 	}
 
 	next := time.Now().Add(s.backoff(ef.Attempts + 1))
-	if rerr := s.registry.RetryEffect(ctx, ef.ID, next, truncate(err.Error(), 200)); rerr != nil {
+	if rerr := s.registry.RetryEffect(ctx, ef.ID, next, truncate(s.scrubToken(err.Error()), 200)); rerr != nil {
 		s.log.Warn("安排副作用重试失败", "effect_id", ef.ID, "err", rerr)
 	}
 	s.audit(ctx, ports.AuditEvent{
@@ -265,7 +268,7 @@ func (s *Service) processDeletions(ctx context.Context, lease time.Duration) {
 			})
 		default:
 			next := time.Now().Add(s.deletionBackoff(job.Attempts + 1))
-			if nerr := s.deletion.Nack(ctx, job.ID, next, truncate(err.Error(), 200)); nerr != nil {
+			if nerr := s.deletion.Nack(ctx, job.ID, next, truncate(s.scrubToken(err.Error()), 200)); nerr != nil {
 				s.log.Warn("安排删除重试失败", "job_id", job.ID, "err", nerr)
 			}
 		}
@@ -295,22 +298,48 @@ func (s *Service) deletionBackoff(attempt int) time.Duration {
 }
 
 // isPermanentEffectError 判断"重试也不会成功"的错误。
+//
+// 用库给出的结构化错误码判断，不做文本子串匹配：原来的实现匹配 "400" 子串，真正的
+// `Bad Request: …`（模型库里是 Code=400 的结构化错误）反而匹配不上、会被重试满 20 次；
+// 反过来，网络错误原文里恰好出现 "400"（URL、token 里都可能）又会被当成永久。
 func isPermanentEffectError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "not enough rights"),
-		strings.Contains(msg, "user not found"),
-		strings.Contains(msg, "chat not found"),
-		strings.Contains(msg, "bot was blocked"),
-		strings.Contains(msg, "peer_id_invalid"),
-		strings.Contains(msg, "user_is_bot"),
-		strings.Contains(msg, "participant_missing"),
-		strings.Contains(msg, "hide_requester_missing"),
-		strings.Contains(msg, "400"):
-		return true
+	var apiErr *tgbotapi.Error
+	if errors.As(err, &apiErr) && apiErr != nil {
+		switch apiErr.Code {
+		case http.StatusBadRequest:
+			return isPermanentBadRequest(apiErr.Message)
+		case http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed:
+			// 没权限（被降权/被踢）、会话不存在、方法不支持：重试无意义。
+			return true
+		}
+		return false
+	}
+	// 不是 Telegram 的结构化错误（网络、超时、DNS）：都还有可能成功。
+	return false
+}
+
+// isPermanentBadRequest 判别"再试也不会变"的 400；其余 400（如消息为空/过长）按可重试处理，
+// 交给重试上限兜底。
+func isPermanentBadRequest(msg string) bool {
+	msg = strings.ToLower(msg)
+	for _, m := range []string{
+		"not enough rights",
+		"user not found",
+		"chat not found",
+		"bot was blocked",
+		"peer_id_invalid",
+		"user_is_bot",
+		"participant_missing",
+		"hide_requester_missing",
+		"chat_write_forbidden",
+		"message to delete not found",
+	} {
+		if strings.Contains(msg, m) {
+			return true
+		}
 	}
 	return false
 }

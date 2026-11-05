@@ -7,6 +7,7 @@ package gatekeeper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -189,13 +190,19 @@ func (s *Service) Group(ctx context.Context, chatID int64) (domain.GroupConfig, 
 	return s.groups.EnsureGroup(ctx, chatID, defaults)
 }
 
-// SaveGroup 以 CAS 保存群配置，冲突时自动重读重试一次。
+// ErrConfigConflict 表示群配置在读取之后被别人改过，本次写入没有生效。
+var ErrConfigConflict = errors.New("配置刚被其他管理员改过，本次没有保存，请重试")
+
+// SaveGroup 以调用方读到的 revision 做 CAS 保存群配置。
+//
+// 以前的实现先重读一次再拿"最新 revision"去写，等于把乐观锁关掉了：两个管理员同时
+// 用命令改不同字段时，后写的人会连别人刚改的字段一起覆盖。现在用调用方手里那份
+// revision，后到的人会拿到 ErrConfigConflict。
 func (s *Service) SaveGroup(ctx context.Context, cfg domain.GroupConfig) error {
-	cur, err := s.groups.GetGroup(ctx, cfg.ChatID)
-	if err != nil {
-		return err
-	}
-	if _, err := s.groups.SaveGroup(ctx, cfg, cur.Revision); err != nil {
+	if _, err := s.groups.SaveGroup(ctx, cfg, cfg.Revision); err != nil {
+		if errors.Is(err, ports.ErrConflict) {
+			return ErrConfigConflict
+		}
 		return err
 	}
 	return nil

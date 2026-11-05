@@ -19,6 +19,8 @@ const (
 	banReasonKick banReason = "kick"
 	// banReasonAdmin 管理员在题目卡片/管理员卡片上点了"封禁"。
 	banReasonAdmin banReason = "admin_ban"
+	// banReasonAdRequest 申请模式下命中广告词，且配了 ad_word_request_ban_days > 0。
+	banReasonAdRequest banReason = "request_ad_word"
 )
 
 // botFault 判断这次封禁是不是机器人自身故障造成的。这类封禁错不在用户，
