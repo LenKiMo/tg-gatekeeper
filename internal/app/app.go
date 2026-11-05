@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -145,7 +146,13 @@ func (a *App) Run(ctx context.Context) error {
 
 	// 退出信号与"更新循环意外退出"两条路径都会走到清理，只允许执行一次。
 	var shutdownOnce sync.Once
-	doShutdown := func() { shutdownOnce.Do(a.shutdown) }
+	// stopping 标记"这次退出是信号触发的有序停机"：更新循环随后因为客户端被关而退出，
+	// 不能把它当成异常崩溃（否则 systemd 会看到失败退出码并计入重启）。
+	var stopping atomic.Bool
+	doShutdown := func() {
+		stopping.Store(true)
+		shutdownOnce.Do(a.shutdown)
+	}
 
 	// 客户端库的 Run() 没有停止接口：退出靠取消 ctx + 进程返回。
 	go func() {
@@ -172,8 +179,15 @@ func (a *App) Run(ctx context.Context) error {
 
 	select {
 	case <-runCtx.Done():
+		// 上层 ctx 被取消（测试或外部超时）：同样走一遍有序停机再返回。
+		doShutdown()
 		return nil
 	case <-loopDone:
+		if stopping.Load() {
+			// 信号触发的停机：shutdown 关掉客户端后更新循环自然结束，属正常退出。
+			a.log.Info("已按退出信号停止")
+			return nil
+		}
 		a.log.Error("更新循环已退出，进程退出以便被重新拉起")
 		doShutdown()
 		return errors.New("更新循环意外退出")

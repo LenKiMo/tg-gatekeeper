@@ -12,9 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
 	"runtime"
-	"syscall"
 	"time"
 
 	"github.com/LenKiMo/tg-gatekeeper/internal/app"
@@ -67,9 +65,10 @@ func runCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
+	// 退出信号由 app.Run 自己接管：它先排空在途任务、再关资源，最后才让更新循环结束。
+	// 这里**不能**把信号绑到 ctx 上——ctx 一取消 Run 就返回，进程当场退出，
+	// 负责清理的协程几乎还没开始（旧实现在 systemd stop 时就是这个症状）。
+	ctx := context.Background()
 	a, err := app.New(ctx, cfg)
 	if err != nil {
 		return err
