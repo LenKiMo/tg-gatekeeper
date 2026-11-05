@@ -74,8 +74,9 @@ func staleUpload(u tgbotapi.Update, startup time.Time) bool {
 		ts = u.Message.Time()
 	case u.EditedMessage != nil:
 		ts = u.EditedMessage.Time()
-	case u.CallbackQuery != nil && u.CallbackQuery.Message != nil:
-		ts = u.CallbackQuery.Message.Time()
+	// 回调不参与积压过滤：按钮的有效性由会话状态机判定（Claim 校验 state/expires_at，
+	// 重复点击只有一个能赢），而这里能取到的时间是"出题时间"，不是"点击时间"。
+	// 拿它当判据会把重启前发出的卡片整个废掉——包括管理员卡片上的放行/封禁。
 	case u.ChatMember != nil:
 		ts = time.Unix(u.ChatMember.Date, 0)
 	case u.MyChatMember != nil:
@@ -401,7 +402,9 @@ func (r *Router) handleMessage(u tgbotapi.Update) error {
 
 	// 命令处理（命令 lane 满载时回"繁忙"，不阻塞 update 循环）。
 	cmd := strings.Fields(text)[0]
-	key := ports.DispatchKey{ChatID: chatID, UserID: userID}
+	// 命令按群串行：两个管理员同时改同一个群的配置时，先到的那个先落库，后到的拿到
+	// ErrConflict 并收到"配置刚被改过"的提示，而不是互相覆盖。
+	key := ports.DispatchKey{ChatID: chatID}
 	msgRef := toRef(m)
 	// /reg（回复一条消息）要的是被回复的那条消息，不是命令消息本身。
 	replyRef := replyTarget(m)
