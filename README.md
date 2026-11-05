@@ -46,12 +46,12 @@
    广告号很快会被 Telegram 注销，临时封禁能避免群黑名单随时间无限膨胀；
    全过程写结构化审计日志。
 6. **机器人代发广告拦截**（`moderation`）：真号通过验证后再借机器人投放广告是另一类问题，
-   关键词没有用——广告正文、按钮、链接都由对方随时可换。这里不认文案，只认三种
-   **普通客户端造不出来**的结构特征：消息带 `via_bot`（内联机器人代发）、发送者本身是
-   机器人（访客机器人 guest bots 以自身身份发言）、普通成员的消息带内联键盘（内联键盘
-   只有机器人能附带）。命中即删消息；同一用户在窗口内再犯升级为临时封禁（`ban_days`），
-   也可直接把 `bot_message_action` 设成 `ban`。管理员豁免，`via_bot_allowlist` 放过
-   `@gif` 这类正常机器人。
+   关键词没用——广告正文、按钮、链接都由对方随时可换。这里按**发送者是谁**分两类处置：
+   用户 @ 一个**非群成员的机器人**、由它以自身身份回话（访客机器人 guest bots，客户端显示
+   `Xxx Bot 来自 <用户>`）→ 命中 `bot_message_action`；成员自己发消息但带 `via_bot`
+   （内联机器人 inline mode）→ 由 `inline_bot_action` 控制，**默认 off**，因为群里
+   `@某Bot` 查资料是正常用法。封人时封的是召唤访客机器人的那个真人（机器人不是成员、封不了）。
+   管理员豁免，`via_bot_allowlist` 放过指定机器人。
    前提：机器人必须关闭隐私模式（BotFather → `/setprivacy` → Disable），否则群里的
    普通发言根本不会推送过来——启动日志会对此告警。
 
@@ -134,8 +134,8 @@ gatekeeper:
 
 moderation:
   enabled: true
-  bot_message_action: delete    # off | delete | ban —— 内联/访客机器人代发、带内联键盘
-  repeat_ban_after: 2           # 同窗口内第 N 次命中升级为封禁（0 = 只删不封）
+  bot_message_action: delete    # off | delete | ban —— 访客机器人以自身身份发言
+  inline_bot_action: off        # off | delete | ban —— 成员用 @某Bot 内联代发（默认关）
   ban_days: 30                  # 升级封禁的天数；0 = 永久
 ```
 

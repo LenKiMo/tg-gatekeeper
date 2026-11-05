@@ -120,10 +120,9 @@ type Moderation struct {
 	AdTextAction string `yaml:"ad_text_action"`
 	// BanDays 是 ban 动作的临时封禁天数（0 = 永久）。
 	BanDays int `yaml:"ban_days"`
-	// RepeatBanAfter > 0 时，同一用户在同一窗口内第 N 次命中即升级为封禁：
-	// 偶发一次（比如有人用 @gif 发个动图）只删消息，刷屏的广告号第二次就没了。
-	RepeatBanAfter  int `yaml:"repeat_ban_after"`
-	RepeatWindowSec int `yaml:"repeat_window_seconds"`
+	// InlineBotAction 是成员用内联机器人代发消息（via_bot）时的动作：off | delete | ban。
+	// 默认 off：群里 @某Bot 查资料是正常用法，误封代价高；确认群里不需要时再开。
+	InlineBotAction string `yaml:"inline_bot_action"`
 	// AdminExempt 为 true 时群主/管理员发的消息不拦。
 	AdminExempt bool `yaml:"admin_exempt"`
 	// ViaBotAllowlist 是允许使用的内联/访客机器人用户名（不带 @），例如 gif。
@@ -398,8 +397,7 @@ func Default() *Config {
 			BotMessageAction: "delete",
 			AdTextAction:     "off",
 			BanDays:          30,
-			RepeatBanAfter:   2,
-			RepeatWindowSec:  600,
+			InlineBotAction:  "off",
 			AdminExempt:      true,
 			ViaBotAllowlist:  nil,
 		},
@@ -682,6 +680,7 @@ func (c *Config) Validate() error {
 	for name, v := range map[string]string{
 		"moderation.bot_message_action": c.Moderation.BotMessageAction,
 		"moderation.ad_text_action":     c.Moderation.AdTextAction,
+		"moderation.inline_bot_action":  c.Moderation.InlineBotAction,
 	} {
 		switch v {
 		case "off", "delete", "ban":
@@ -691,12 +690,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Moderation.BanDays < 0 || c.Moderation.BanDays > 3650 {
 		return fmt.Errorf("moderation.ban_days 必须在 0..3650（0 = 永久），当前 %d", c.Moderation.BanDays)
-	}
-	if c.Moderation.RepeatBanAfter < 0 {
-		c.Moderation.RepeatBanAfter = 0
-	}
-	if c.Moderation.RepeatWindowSec <= 0 {
-		c.Moderation.RepeatWindowSec = 600
 	}
 	for i, name := range c.Moderation.ViaBotAllowlist {
 		name = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(name), "@")))

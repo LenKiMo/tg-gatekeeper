@@ -63,23 +63,24 @@ ad_filter:
   bio_lookup_error_policy: audit_continue   # audit_continue | deny
   match_mode: contains
 
-# 消息级拦截：已通过验证的成员在群里**借机器人代发**广告时的自动处置。
-# 三种结构特征（普通客户端造不出来，换话术/换链接都绕不开）：
-#   - via_bot 非空：用户用内联机器人（inline mode）代发；
-#   - 发送者本身是机器人：访客机器人（guest bots，Bot API 10.0）以自身身份发言；
-#   - 普通成员的消息带内联键盘：内联键盘只有机器人能附带。
+# 消息级拦截：成员在群里**借机器人投放广告**时的自动处置。两类必须分开：
+#   - 访客机器人（guest bots，Bot API 10.0）：用户 @ 一个**不是群成员**的机器人，
+#     机器人以自身身份在群里回一句（客户端显示 `Xxx Bot 来自 <用户>`），
+#     `from` 是机器人、`guest_bot_caller_user` 是召唤它的真人 → bot_message_action；
+#   - 内联机器人（inline mode）：成员自己发消息、消息带 `via_bot`，`from` 仍是本人。
+#     群里用 @某Bot 查资料是正常用法 → inline_bot_action 默认 off，别轻易开。
+# 封人时：访客机器人封的是召唤者（机器人本身不是成员，封不了）。
 # 删消息需要机器人在该群有删除消息权限；封人需要封禁成员权限。
 # 注意：机器人必须关闭隐私模式（BotFather → /setprivacy → Disable），否则群里的
 # 普通发言根本不会推送过来，本段配置等于没生效（启动日志会告警）。
 moderation:
   enabled: true
-  bot_message_action: delete       # off | delete | ban（命中结构信号时的动作）
+  bot_message_action: delete       # off | delete | ban（访客机器人：机器人以自身身份发言）
+  inline_bot_action: off           # off | delete | ban（内联代发：真人自己发、消息带 via_bot）
   ad_text_action: off              # off | delete | ban（正文命中 ad_filter.global_words）
   ban_days: 30                     # ban 的临时封禁天数；0 = 永久
-  repeat_ban_after: 2              # 同一用户窗口内第 N 次命中即封禁；0 = 不升级（只删）
-  repeat_window_seconds: 600
   admin_exempt: true               # 群主/管理员用 @gif 之类不拦
-  via_bot_allowlist: []            # 允许的内联机器人用户名，例如 ["gif", "bing"]
+  via_bot_allowlist: []            # 允许的机器人用户名，例如 ["gif", "bing"]
   alert_chat_id: 0                 # 非 0 时每次拦截往该会话发一条告警
 
 gatekeeper:
