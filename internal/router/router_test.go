@@ -29,6 +29,37 @@ func TestMemberJoined(t *testing.T) {
 	}
 }
 
+// TestJoinedMembersRecordsInviter 验证入群服务消息这条通道也带上邀请者。
+//
+// invited_member_policy 靠 InvitedBy 判断；chat_member 通道带了而这条没带的话，
+// 被邀请的人照样会被出题（两条通道谁先到都一样）。
+func TestJoinedMembersRecordsInviter(t *testing.T) {
+	invited := joinedMembers(&tgbotapi.Message{
+		From:           &tgbotapi.User{ID: 100, FirstName: "老成员"},
+		NewChatMembers: []tgbotapi.User{{ID: 7, FirstName: "新人"}, {ID: 8, FirstName: "新人二"}},
+	})
+	if len(invited) != 2 || invited[0].UserID != 7 || invited[1].UserID != 8 {
+		t.Fatalf("成员解析不对: %+v", invited)
+	}
+	for _, m := range invited {
+		if m.InvitedBy != 100 {
+			t.Errorf("被拉进群的成员应记录邀请者 100，实际 %+v", m)
+		}
+	}
+
+	// 自己点链接进群：from 是本人，或者干脆没有 from，都不算被邀请。
+	self := joinedMembers(&tgbotapi.Message{
+		From:           &tgbotapi.User{ID: 7},
+		NewChatMembers: []tgbotapi.User{{ID: 7, FirstName: "新人"}},
+	})
+	noSender := joinedMembers(&tgbotapi.Message{
+		NewChatMembers: []tgbotapi.User{{ID: 7, FirstName: "新人"}},
+	})
+	if self[0].InvitedBy != 0 || noSender[0].InvitedBy != 0 {
+		t.Errorf("自加入不应记录邀请者: %+v %+v", self[0], noSender[0])
+	}
+}
+
 // TestStaleUploadSkipsBacklog 验证重启后不会把几小时前的积压更新当成新事件。
 func TestStaleUploadSkipsBacklog(t *testing.T) {
 	startup := time.Unix(1_700_000_000, 0)

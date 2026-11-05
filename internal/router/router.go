@@ -289,16 +289,10 @@ func (r *Router) handleMessage(u tgbotapi.Update) error {
 
 	// 入群 / 退群服务消息。
 	if len(m.NewChatMembers) > 0 {
-		members := make([]gatekeeper.Member, 0, len(m.NewChatMembers))
-		ids := make([]int64, 0, len(m.NewChatMembers))
-		for _, member := range m.NewChatMembers {
-			members = append(members, gatekeeper.Member{
-				UserID:      member.ID,
-				DisplayName: member.FullName(),
-				IsBot:       member.IsBot,
-				IsPremium:   member.IsPremium,
-			})
-			ids = append(ids, member.ID)
+		members := joinedMembers(m)
+		ids := make([]int64, 0, len(members))
+		for _, member := range members {
+			ids = append(ids, member.UserID)
 		}
 		// 入群是本 bot 最关键的输入，用 Info 打点：以后"没触发验证"可以直接看这句日志。
 		r.log.Info("收到入群服务消息",
@@ -418,6 +412,28 @@ func (r *Router) handleMessage(u tgbotapi.Update) error {
 		return nil
 	}
 	return nil
+}
+
+// joinedMembers 把入群服务消息里的新成员整理成业务层的 Member。
+//
+// 被别人拉进群时，服务消息的 from 是邀请者（自己点链接进来时 from 是本人或为空）。
+// 邀请者必须带上：invited_member_policy 靠它判断，而同一次入群的 chat_member 更新
+// 已经带了——只有一条通道带的话，另一条照样会给被邀请的人出题。
+func joinedMembers(m *tgbotapi.Message) []gatekeeper.Member {
+	members := make([]gatekeeper.Member, 0, len(m.NewChatMembers))
+	for _, member := range m.NewChatMembers {
+		joined := gatekeeper.Member{
+			UserID:      member.ID,
+			DisplayName: member.FullName(),
+			IsBot:       member.IsBot,
+			IsPremium:   member.IsPremium,
+		}
+		if m.From != nil && m.From.ID != member.ID {
+			joined.InvitedBy = m.From.ID
+		}
+		members = append(members, joined)
+	}
+	return members
 }
 
 // splitCommand 把 "/start abc" 拆成命令与参数；"/start@SomeBot abc" 也能处理。
