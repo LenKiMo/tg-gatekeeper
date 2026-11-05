@@ -301,10 +301,17 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 			deleteJoin()
 			deleteAdminCard()
 		case domain.StateWrong:
-			// 答错即处置（这里的"处置"= 封禁并在 kick_unban_after 后解封，允许重新入群尝试）。
-			kick()
+			// 答错即处置。申请模式下人还没进群，处置 = 拒绝申请（与超时一致），不封禁——
+			// 封一个不在群里的人只会往黑名单里添东西；顺带清掉群里的管理员卡片，否则它
+			// 会留在群里、按钮点了也没反应。入群模式下处置 = 踢出，允许重新入群尝试。
+			if before.Mode == domain.SessionRequest {
+				add(domain.EffectDecline, chatUser, 0)
+			} else {
+				kick()
+			}
 			deleteChallenge()
 			deleteJoin()
+			deleteAdminCard()
 		case domain.StateTimedOut:
 			if before.Mode == domain.SessionRequest {
 				add(domain.EffectDecline, chatUser, 0)
