@@ -39,6 +39,10 @@ type Service struct {
 
 	gen atomic.Pointer[challenge.Generator]
 
+	// spamMu / spamHits 是消息级拦截的"再犯即封"计数器（窗口内计数，过期即清）。
+	spamMu   sync.Mutex
+	spamHits map[string]spamHit
+
 	refreshOnce sync.Once
 	stopCh      chan struct{}
 	wg          sync.WaitGroup

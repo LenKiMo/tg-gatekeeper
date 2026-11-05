@@ -185,6 +185,12 @@ func (c *Client) UpdatesChan(timeoutSeconds int) tgbotapi.UpdatesChannel {
 // Self 实现 ports.Telegram。
 func (c *Client) Self() (int64, string) { return c.self.ID, c.self.UserName }
 
+// ReadsAllGroupMessages 返回机器人是否已关闭隐私模式（getMe 的 can_read_all_group_messages）。
+//
+// 隐私模式开启时，群里的普通成员发言根本不会推送给机器人——消息级广告拦截会完全
+// 失效且没有任何报错，所以启动时必须提示（只能在 BotFather 里 /setprivacy 关）。
+func (c *Client) ReadsAllGroupMessages() bool { return c.self.CanReadAllGroupMessages }
+
 // Close 实现 ports.Telegram。
 func (c *Client) Close() error { return nil }
 

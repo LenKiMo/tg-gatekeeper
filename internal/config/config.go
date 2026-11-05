@@ -29,6 +29,7 @@ type Config struct {
 	GroupDefaults  GroupDefaults  `yaml:"group_defaults"`
 	Commands       Commands       `yaml:"commands"`
 	AdFilter       AdFilter       `yaml:"ad_filter"`
+	Moderation     Moderation     `yaml:"moderation"`
 	Gatekeeper     Gatekeeper     `yaml:"gatekeeper"`
 	Provider       Provider       `yaml:"provider"`
 	Images         Images         `yaml:"images"`
@@ -102,6 +103,33 @@ type AdFilter struct {
 	NegationWords        []string `yaml:"negation_words"`          // 紧邻命中词前的否定标记（免责声明豁免）
 	BioLookupErrorPolicy string   `yaml:"bio_lookup_error_policy"` // audit_continue | deny
 	MatchMode            string   `yaml:"match_mode"`              // contains
+}
+
+// Moderation 是群内消息级拦截配置。
+//
+// 与 ad_filter（入群前查昵称/简介）覆盖的场景不同：这里是**已通过验证的成员**
+// 在群里发言时的拦截，专门对付"真人号进群后借机器人代发广告"——包括内联机器人
+// （inline mode，消息带 via_bot）和新版访客机器人（guest bots，消息发送者是机器人
+// 本身、它并不是群成员）、以及只有机器人才能附带的带链接内联键盘。
+type Moderation struct {
+	Enabled bool `yaml:"enabled"`
+	// BotMessageAction 是命中"机器人代发"结构信号时的动作：off | delete | ban。
+	BotMessageAction string `yaml:"bot_message_action"`
+	// AdTextAction 是普通成员消息文本命中广告词时的动作：off | delete | ban。
+	// 文本扫描只用 ad_filter.global_words（不查库），默认关闭以免误删正常聊天。
+	AdTextAction string `yaml:"ad_text_action"`
+	// BanDays 是 ban 动作的临时封禁天数（0 = 永久）。
+	BanDays int `yaml:"ban_days"`
+	// RepeatBanAfter > 0 时，同一用户在同一窗口内第 N 次命中即升级为封禁：
+	// 偶发一次（比如有人用 @gif 发个动图）只删消息，刷屏的广告号第二次就没了。
+	RepeatBanAfter  int `yaml:"repeat_ban_after"`
+	RepeatWindowSec int `yaml:"repeat_window_seconds"`
+	// AdminExempt 为 true 时群主/管理员发的消息不拦。
+	AdminExempt bool `yaml:"admin_exempt"`
+	// ViaBotAllowlist 是允许使用的内联/访客机器人用户名（不带 @），例如 gif。
+	ViaBotAllowlist []string `yaml:"via_bot_allowlist"`
+	// AlertChatID 非 0 时，每次拦截往该会话发一条告警（群内垃圾广告集中排查用）。
+	AlertChatID int64 `yaml:"alert_chat_id"`
 }
 
 // Difficulty 是难度策略。
@@ -364,6 +392,16 @@ func Default() *Config {
 			NegationWords:        []string{"请勿", "切勿", "勿", "别", "不要", "禁止", "谢绝", "拒绝", "未经"},
 			BioLookupErrorPolicy: "audit_continue",
 			MatchMode:            "contains",
+		},
+		Moderation: Moderation{
+			Enabled:          true,
+			BotMessageAction: "delete",
+			AdTextAction:     "off",
+			BanDays:          30,
+			RepeatBanAfter:   2,
+			RepeatWindowSec:  600,
+			AdminExempt:      true,
+			ViaBotAllowlist:  nil,
 		},
 		Gatekeeper: Gatekeeper{
 			OptionCount:           12,
@@ -639,6 +677,30 @@ func (c *Config) Validate() error {
 	case "audit_continue", "deny":
 	default:
 		return errors.New("ad_filter.bio_lookup_error_policy 只能是 audit_continue 或 deny")
+	}
+
+	for name, v := range map[string]string{
+		"moderation.bot_message_action": c.Moderation.BotMessageAction,
+		"moderation.ad_text_action":     c.Moderation.AdTextAction,
+	} {
+		switch v {
+		case "off", "delete", "ban":
+		default:
+			return fmt.Errorf("%s 只能是 off/delete/ban，当前 %q", name, v)
+		}
+	}
+	if c.Moderation.BanDays < 0 || c.Moderation.BanDays > 3650 {
+		return fmt.Errorf("moderation.ban_days 必须在 0..3650（0 = 永久），当前 %d", c.Moderation.BanDays)
+	}
+	if c.Moderation.RepeatBanAfter < 0 {
+		c.Moderation.RepeatBanAfter = 0
+	}
+	if c.Moderation.RepeatWindowSec <= 0 {
+		c.Moderation.RepeatWindowSec = 600
+	}
+	for i, name := range c.Moderation.ViaBotAllowlist {
+		name = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(name), "@")))
+		c.Moderation.ViaBotAllowlist[i] = name
 	}
 
 	if c.Provider.Active == "" {

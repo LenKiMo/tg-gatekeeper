@@ -125,6 +125,10 @@ func (a *App) Run(ctx context.Context) error {
 		"group_store", a.cfg.Storage.GroupStore,
 		"session_registry", a.cfg.Storage.SessionRegistry,
 	)
+	if a.cfg.Moderation.Enabled && !a.client.ReadsAllGroupMessages() {
+		a.log.Warn("隐私模式未关闭：只能收到命令/@提及，消息级广告拦截（机器人代发、内联键盘）不会生效",
+			"fix", "BotFather → /setprivacy → Disable（改完需重新拉群或重启客户端）")
+	}
 
 	if err := a.service.Start(ctx); err != nil {
 		return err

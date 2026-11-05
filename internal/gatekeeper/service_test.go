@@ -52,6 +52,8 @@ type fakeAPI struct {
 	challengeErr error
 	nextMessage  int64
 	admins       map[int64]bool
+	// statuses 覆盖 GetMemberStatus 的返回值；缺省一律 member。
+	statuses map[int64]string
 }
 
 func newFakeAPI() *fakeAPI {
@@ -154,7 +156,10 @@ func (f *fakeAPI) IsAdminWithPermissions(_ context.Context, _ int64, userID int6
 	return f.admins[userID], nil
 }
 
-func (f *fakeAPI) GetMemberStatus(_ context.Context, _, _ int64) (string, error) {
+func (f *fakeAPI) GetMemberStatus(_ context.Context, _, userID int64) (string, error) {
+	if s, ok := f.statuses[userID]; ok {
+		return s, nil
+	}
 	return "member", nil
 }
 

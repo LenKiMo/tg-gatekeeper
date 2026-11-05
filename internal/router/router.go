@@ -363,11 +363,30 @@ func (r *Router) handleMessage(u tgbotapi.Update) error {
 		return nil
 	}
 
-	// 待验证发言拦截：同步查一次会话（本地索引查询），保证它排在命令处理之前。
 	// 用 TextWithLinks：命令参数里若带链接（如 /welcome 欢迎[点击阅读](url)），
 	// 客户端把它变成了实体，直接取 Text 会把 URL 丢掉。
 	text := strings.TrimSpace(telegram.TextWithLinks(m))
 	isCommand := m.IsCommand()
+
+	// 机器人代发广告拦截：结构信号（via_bot / 机器人发送 / 带内联键盘）优先于命令
+	// 与待验证拦截——这类消息不该被当成业务输入。广告词扫正文是可选项，默认关闭。
+	if r.cfg.Moderation.Enabled {
+		if sig, hit := detectSpam(m, r.selfID(), r.cfg.Moderation.ViaBotAllowlist); hit {
+			r.log.Info("命中机器人代发信号", "chat_id", chatID, "user_id", userID,
+				"reason", sig.Reason, "via_bot", sig.ViaBotUsername, "sender_is_bot", sig.SenderIsBot)
+			return r.submitSpam(sig)
+		}
+		if !isCommand {
+			if word, hit := r.svc.AdWordMatch(text); hit {
+				return r.submitSpam(gatekeeper.SpamSignal{
+					ChatID: chatID, UserID: userID, DisplayName: displayName,
+					MessageID: m.MessageID, Reason: gatekeeper.SpamReasonAdText, MatchedWord: word,
+				})
+			}
+		}
+	}
+
+	// 待验证发言拦截：同步查一次会话（本地索引查询），保证它排在命令处理之前。
 	if !isCommand {
 		if pending, err := r.svc.HasPendingSession(context.Background(), chatID, userID); err == nil && pending {
 			msgRef := toRef(m)
@@ -415,6 +434,22 @@ func splitCommand(text string) (cmd, payload string) {
 		payload = fields[1]
 	}
 	return cmd, payload
+}
+
+// submitSpam 把拦截任务丢进关键 lane。提交失败只记日志：拦截失败的后果是"这条
+// 广告留在群里"，而不是让 update 循环卡住。
+func (r *Router) submitSpam(sig gatekeeper.SpamSignal) error {
+	_, cancel := r.criticalCtx()
+	key := ports.DispatchKey{ChatID: sig.ChatID, UserID: sig.UserID}
+	if err := r.dispatch.Submit(context.Background(), ports.LaneCritical, key, func(ctx context.Context) error {
+		defer cancel()
+		return r.svc.OnSpamSignal(ctx, sig)
+	}); err != nil {
+		cancel()
+		r.log.Warn("拦截任务提交失败", "chat_id", sig.ChatID, "user_id", sig.UserID,
+			"reason", sig.Reason, "err", err)
+	}
+	return nil
 }
 
 // criticalCtx 给关键任务一个比"进程退出"更细的取消边界：

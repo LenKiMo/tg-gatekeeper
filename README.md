@@ -45,6 +45,15 @@
    （群级设置存在库里，直接改库容易写坏列类型，命令由程序自己写）。
    广告号很快会被 Telegram 注销，临时封禁能避免群黑名单随时间无限膨胀；
    全过程写结构化审计日志。
+6. **机器人代发广告拦截**（`moderation`）：真号通过验证后再借机器人投放广告是另一类问题，
+   关键词没有用——广告正文、按钮、链接都由对方随时可换。这里不认文案，只认三种
+   **普通客户端造不出来**的结构特征：消息带 `via_bot`（内联机器人代发）、发送者本身是
+   机器人（访客机器人 guest bots 以自身身份发言）、普通成员的消息带内联键盘（内联键盘
+   只有机器人能附带）。命中即删消息；同一用户在窗口内再犯升级为临时封禁（`ban_days`），
+   也可直接把 `bot_message_action` 设成 `ban`。管理员豁免，`via_bot_allowlist` 放过
+   `@gif` 这类正常机器人。
+   前提：机器人必须关闭隐私模式（BotFather → `/setprivacy` → Disable），否则群里的
+   普通发言根本不会推送过来——启动日志会对此告警。
 
 申请审批模式还有一个 Telegram 自身的限制要处理：**机器人不能主动私聊没点过它的人**。
 因此申请人的私聊发不出去时，机器人不会直接拒绝，而是在群里 @ 他并给出一个
@@ -122,6 +131,12 @@ gatekeeper:
   shortage_policy: deny         # deny=题库不足时不放行；reduce=降级到 min_option_count
   failure_policy: deny          # 基础设施故障时 deny（拒绝）/ allow（放行，会告警）
   block_pending_messages: true  # 未通过验证就发言 → 立即处置
+
+moderation:
+  enabled: true
+  bot_message_action: delete    # off | delete | ban —— 内联/访客机器人代发、带内联键盘
+  repeat_ban_after: 2           # 同窗口内第 N 次命中升级为封禁（0 = 只删不封）
+  ban_days: 30                  # 升级封禁的天数；0 = 永久
 ```
 
 ## 📚 自备题库（本仓库不含素材）
