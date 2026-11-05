@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -82,50 +83,90 @@ func (r *Resolver) Resolve(ctx context.Context, imageRef string) (ports.Resolved
 	if ref == "" {
 		return ports.ResolvedImage{}, fmt.Errorf("%w: 空图片引用", ErrImage)
 	}
-	key := cacheKey(ref)
+	key := refCacheKey(ref)
 	if cached, ok := r.loadCache(key); ok {
-		return cached, nil
+		switch {
+		case isHTTPRef(ref):
+			// 服务端给了 ETag / Last-Modified 就每次做条件请求，304 才用缓存。
+			// 只按 URL 做键、靠 TTL 过期，会让"原地换图"在 TTL 内一直拿到旧图。
+			if fresh, ok := r.revalidate(ctx, ref, key, cached); ok {
+				return fresh, nil
+			}
+			return cached, nil
+		case strings.HasPrefix(ref, "data:"):
+			return cached, nil
+		default:
+			// 本地文件看内容指纹：源图被原地替换时 mtime/大小会变，旧缓存当场作废。
+			if !r.localCacheStale(ref, key) {
+				return cached, nil
+			}
+			r.dropCache(key)
+		}
 	}
 
-	raw, err := r.fetch(ctx, ref)
+	res, err := r.fetch(ctx, ref)
 	if err != nil {
 		return ports.ResolvedImage{}, err
 	}
-	out, err := r.reencode(raw)
+	out, err := r.reencode(res.raw)
 	if err != nil {
 		return ports.ResolvedImage{}, err
 	}
 	out.CacheKey = key
 	r.storeCache(key, out)
+	meta := cacheMeta{URL: ref, ETag: res.etag, LastModified: res.lastModified}
+	meta.SourceMTime, meta.SourceSize = r.sourceFingerprint(ref)
+	r.storeCacheMeta(key, meta)
 	return out, nil
 }
 
 // Close 释放资源（当前无长连接需要单独处理）。
 func (r *Resolver) Close() error { return nil }
 
-func (r *Resolver) fetch(ctx context.Context, ref string) ([]byte, error) {
+// fetchResult 是一次取图的结果。http 会把校验器带回来，供缓存做条件请求。
+type fetchResult struct {
+	raw          []byte
+	etag         string
+	lastModified string
+	notModified  bool
+}
+
+func (r *Resolver) fetch(ctx context.Context, ref string) (fetchResult, error) {
 	switch {
 	case strings.HasPrefix(ref, "data:"):
-		return decodeDataURL(ref)
-	case strings.HasPrefix(ref, "http://"), strings.HasPrefix(ref, "https://"):
-		if !r.schemeAllowed(ref[:4] == "http") {
-			return nil, fmt.Errorf("%w: images.allowed_schemes 未允许 http(s)", ErrImage)
+		raw, err := decodeDataURL(ref)
+		return fetchResult{raw: raw}, err
+	case isHTTPRef(ref):
+		scheme := "http"
+		if strings.HasPrefix(strings.ToLower(ref), "https://") {
+			scheme = "https"
 		}
-		return r.fetchHTTP(ctx, ref)
+		if !r.schemeAllowed(scheme) {
+			return fetchResult{}, fmt.Errorf("%w: images.allowed_schemes 未允许 %s", ErrImage, scheme)
+		}
+		return r.fetchHTTP(ctx, ref, cacheMeta{})
 	default:
-		path := strings.TrimPrefix(strings.TrimPrefix(ref, "file://"), "file:")
-		if !contains(r.cfg.AllowedSchemes, "file") {
-			return nil, fmt.Errorf("%w: images.allowed_schemes 未允许 file", ErrImage)
+		if !r.schemeAllowed("file") {
+			return fetchResult{}, fmt.Errorf("%w: images.allowed_schemes 未允许 file", ErrImage)
 		}
-		return r.readLocal(path)
+		raw, err := r.readLocal(localPath(ref))
+		return fetchResult{raw: raw}, err
 	}
 }
 
-func (r *Resolver) schemeAllowed(isHTTP bool) bool {
-	if isHTTP {
-		return contains(r.cfg.AllowedSchemes, "http") || contains(r.cfg.AllowedSchemes, "https")
-	}
-	return contains(r.cfg.AllowedSchemes, "file")
+// schemeAllowed 按实际协议逐个校验：只写 https 就不该放行 http（反之亦然）。
+func (r *Resolver) schemeAllowed(scheme string) bool {
+	return contains(r.cfg.AllowedSchemes, scheme)
+}
+
+func isHTTPRef(ref string) bool {
+	l := strings.ToLower(ref)
+	return strings.HasPrefix(l, "http://") || strings.HasPrefix(l, "https://")
+}
+
+// localPath 去掉 file:/file:// 前缀，得到本地路径。
+func localPath(ref string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(ref, "file://"), "file:")
 }
 
 func (r *Resolver) readLocal(p string) ([]byte, error) {
@@ -167,10 +208,10 @@ func (r *Resolver) readLocal(p string) ([]byte, error) {
 	return raw, nil
 }
 
-func (r *Resolver) fetchHTTP(ctx context.Context, u string) ([]byte, error) {
+func (r *Resolver) fetchHTTP(ctx context.Context, u string, cond cacheMeta) (fetchResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: 构造图片请求失败: %v", ErrImage, err)
+		return fetchResult{}, fmt.Errorf("%w: 构造图片请求失败: %v", ErrImage, err)
 	}
 	ua := r.cfg.HTTP.UserAgent
 	if ua == "" {
@@ -178,30 +219,44 @@ func (r *Resolver) fetchHTTP(ctx context.Context, u string) ([]byte, error) {
 	}
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "image/*")
+	// 条件请求：上一轮拿到的校验器原样带回去，没变就让服务端回 304，省掉一次重编码。
+	if cond.ETag != "" {
+		req.Header.Set("If-None-Match", cond.ETag)
+	}
+	if cond.LastModified != "" {
+		req.Header.Set("If-Modified-Since", cond.LastModified)
+	}
 
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: 下载图片失败: %v", ErrImage, err)
+		return fetchResult{}, fmt.Errorf("%w: 下载图片失败: %v", ErrImage, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified && (cond.ETag != "" || cond.LastModified != "") {
+		return fetchResult{notModified: true}, nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: 图片响应 %d", ErrImage, resp.StatusCode)
+		return fetchResult{}, fmt.Errorf("%w: 图片响应 %d", ErrImage, resp.StatusCode)
 	}
 	if resp.ContentLength > r.cfg.MaxDownloadBytes && resp.ContentLength > 0 {
-		return nil, fmt.Errorf("%w: 图片 %d 字节超过上限 %d", ErrImage, resp.ContentLength, r.cfg.MaxDownloadBytes)
+		return fetchResult{}, fmt.Errorf("%w: 图片 %d 字节超过上限 %d", ErrImage, resp.ContentLength, r.cfg.MaxDownloadBytes)
 	}
 	// 多读 1 字节以便判断是否超限（Content-Length 可能缺失或撒谎）。
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, r.cfg.MaxDownloadBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: 读取图片响应失败: %v", ErrImage, err)
+		return fetchResult{}, fmt.Errorf("%w: 读取图片响应失败: %v", ErrImage, err)
 	}
 	if int64(len(raw)) > r.cfg.MaxDownloadBytes {
-		return nil, fmt.Errorf("%w: 图片超过 %d 字节上限", ErrImage, r.cfg.MaxDownloadBytes)
+		return fetchResult{}, fmt.Errorf("%w: 图片超过 %d 字节上限", ErrImage, r.cfg.MaxDownloadBytes)
 	}
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("%w: 图片响应为空", ErrImage)
+		return fetchResult{}, fmt.Errorf("%w: 图片响应为空", ErrImage)
 	}
-	return raw, nil
+	return fetchResult{
+		raw:          raw,
+		etag:         resp.Header.Get("ETag"),
+		lastModified: resp.Header.Get("Last-Modified"),
+	}, nil
 }
 
 // reencode 解码并重新编码，顺带做像素与尺寸限制。
@@ -252,9 +307,132 @@ func (r *Resolver) reencode(raw []byte) (ports.ResolvedImage, error) {
 
 // ---------------------------------------------------------------- 缓存
 
-func cacheKey(ref string) string {
+// localCacheStale 判断本地源图是否已经变过：键仍是路径，靠指纹（mtime + 大小）发现替代。
+// 没有指纹的老缓存、或源文件暂时读不到时，按原行为继续用缓存。
+func (r *Resolver) localCacheStale(ref, key string) bool {
+	meta, ok := r.loadCacheMeta(key)
+	if !ok || meta.SourceSize == 0 {
+		return false
+	}
+	st, err := os.Stat(localPath(ref))
+	if err != nil {
+		return false
+	}
+	return st.Size() != meta.SourceSize || st.ModTime().UnixNano() != meta.SourceMTime
+}
+
+// sourceFingerprint 取本地源图的 mtime 与大小；不是本地文件时返回 0,0。
+func (r *Resolver) sourceFingerprint(ref string) (mtime, size int64) {
+	if isHTTPRef(ref) || strings.HasPrefix(ref, "data:") {
+		return 0, 0
+	}
+	st, err := os.Stat(localPath(ref))
+	if err != nil || !st.Mode().IsRegular() {
+		return 0, 0
+	}
+	return st.ModTime().UnixNano(), st.Size()
+}
+
+// dropCache 连图带 meta 一起丢掉（源图变了，旧缓存不能再用）。
+func (r *Resolver) dropCache(key string) {
+	if p := r.cachePath(key); p != "" {
+		_ = os.Remove(p)
+	}
+	if p := r.metaPath(key); p != "" {
+		_ = os.Remove(p)
+	}
+}
+
+func refCacheKey(ref string) string {
 	sum := sha256.Sum256([]byte(ref))
 	return hex.EncodeToString(sum[:])[:32]
+}
+
+// cacheMeta 是缓存的校验信息：http 存 ETag / Last-Modified，本地文件存源图指纹。
+type cacheMeta struct {
+	URL          string `json:"url"`
+	ETag         string `json:"etag,omitempty"`
+	LastModified string `json:"last_modified,omitempty"`
+	SourceMTime  int64  `json:"source_mtime,omitempty"`
+	SourceSize   int64  `json:"source_size,omitempty"`
+}
+
+func (r *Resolver) metaPath(key string) string {
+	if p := r.cachePath(key); p != "" {
+		return p + ".meta"
+	}
+	return ""
+}
+
+func (r *Resolver) loadCacheMeta(key string) (cacheMeta, bool) {
+	p := r.metaPath(key)
+	if p == "" {
+		return cacheMeta{}, false
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return cacheMeta{}, false
+	}
+	var m cacheMeta
+	if err := json.Unmarshal(raw, &m); err != nil || m.URL == "" {
+		return cacheMeta{}, false
+	}
+	return m, true
+}
+
+func (r *Resolver) storeCacheMeta(key string, m cacheMeta) {
+	p := r.metaPath(key)
+	if p == "" {
+		return
+	}
+	if m.ETag == "" && m.LastModified == "" && m.SourceSize == 0 {
+		_ = os.Remove(p) // 既没有 HTTP 校验器也没有源图指纹：不留空 meta
+		return
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o640); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+	}
+}
+
+// revalidate 对 HTTP 缓存做条件请求：304 继续用缓存，200 换成新图。
+func (r *Resolver) revalidate(ctx context.Context, ref, key string, cached ports.ResolvedImage) (ports.ResolvedImage, bool) {
+	meta, ok := r.loadCacheMeta(key)
+	if !ok || (meta.ETag == "" && meta.LastModified == "") {
+		return ports.ResolvedImage{}, false // 服务端没给校验器：沿用 TTL
+	}
+	res, err := r.fetchHTTP(ctx, ref, meta)
+	if err != nil {
+		// 校验失败（网络抖动、服务端 5xx）：继续用缓存，别让一次校验失败就出不了题。
+		return ports.ResolvedImage{}, false
+	}
+	if res.notModified {
+		r.touchCache(key)
+		return cached, true
+	}
+	out, err := r.reencode(res.raw)
+	if err != nil {
+		return ports.ResolvedImage{}, false
+	}
+	out.CacheKey = key
+	r.storeCache(key, out)
+	r.storeCacheMeta(key, cacheMeta{URL: ref, ETag: res.etag, LastModified: res.lastModified})
+	return out, true
+}
+
+// touchCache 刷新缓存文件 mtime：304 之后别让它被 TTL / 容量回收当成旧文件删掉。
+func (r *Resolver) touchCache(key string) {
+	if p := r.cachePath(key); p != "" {
+		now := time.Now()
+		_ = os.Chtimes(p, now, now)
+	}
 }
 
 func (r *Resolver) cachePath(key string) string {

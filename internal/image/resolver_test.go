@@ -213,8 +213,15 @@ func TestCacheReusesBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("缓存文件数 = %d，期望 1", len(entries))
+	// 缓存目录里除了图片还有同名的 .meta（校验信息），只数字体文件。
+	images := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".jpg") || strings.HasSuffix(e.Name(), ".png") {
+			images++
+		}
+	}
+	if images != 1 {
+		t.Fatalf("缓存图片数 = %d，期望 1", images)
 	}
 	// 删掉源文件后仍能从缓存取到（证明缓存生效）。
 	if err := os.Remove(path); err != nil {
