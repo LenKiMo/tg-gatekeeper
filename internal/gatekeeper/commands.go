@@ -102,6 +102,8 @@ func (s *Service) NotifyBusy(ctx context.Context, chatID, userID int64, replyTo 
 }
 
 // HandleCommand 处理群内命令。
+//
+// msgRef 是这条命令所回复的那条消息（不是回复时为零值），目前只有 /reg 用它。
 func (s *Service) HandleCommand(ctx context.Context, chatID, userID int64, displayName, command, text string, msgRef domain.MessageRef) error {
 	cmd := strings.ToLower(strings.TrimSpace(command))
 	if idx := strings.IndexByte(cmd, '@'); idx > 0 {
@@ -310,7 +312,9 @@ func (s *Service) cmdAdWords(ctx context.Context, chatID, userID int64, text str
 //   - /reg <http(s) 链接>：显式链接（推荐，公群可以直接给 t.me/<群名>/<消息ID> 这种好看的链接）
 //   - /reg（回复一条消息）：记录该消息 ID，欢迎语里的 {rules} 会推导成 t.me/c/<内部ID>/<消息ID>
 //   - /reg clear：清空
-func (s *Service) cmdReg(ctx context.Context, chatID, userID int64, text string, msgRef domain.MessageRef) error {
+//
+// replyTo 是被回复的那条消息，不是 /reg 命令消息本身。
+func (s *Service) cmdReg(ctx context.Context, chatID, userID int64, text string, replyTo domain.MessageRef) error {
 	ok, err := s.requireAdmin(ctx, chatID, userID)
 	if err != nil || !ok {
 		return s.replyTemp(ctx, chatID, userID, "只有管理员可以设置群规。")
@@ -326,8 +330,8 @@ func (s *Service) cmdReg(ctx context.Context, chatID, userID int64, text string,
 		group.RulesMessageID = 0
 	case strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://"):
 		group.RulesLink = arg
-	case arg == "" && msgRef.MessageID != 0:
-		group.RulesMessageID = msgRef.MessageID
+	case arg == "" && replyTo.MessageID != 0:
+		group.RulesMessageID = replyTo.MessageID
 		group.RulesLink = ""
 	default:
 		return s.replyTemp(ctx, chatID, userID,

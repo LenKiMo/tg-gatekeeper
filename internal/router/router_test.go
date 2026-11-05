@@ -178,3 +178,26 @@ func TestSplitCommandParsing(t *testing.T) {
 		}
 	}
 }
+
+// TestReplyTarget 验证 /reg 拿到的是被回复的那条消息，而不是命令消息本身。
+func TestReplyTarget(t *testing.T) {
+	chat := &tgbotapi.Chat{ID: -100}
+	reply := &tgbotapi.Message{
+		MessageID: 50, Chat: chat, Text: "/reg",
+		ReplyToMessage: &tgbotapi.Message{MessageID: 12, Chat: chat, Text: "群规正文"},
+	}
+	if got := replyTarget(reply); got.MessageID != 12 || got.ChatID != -100 {
+		t.Errorf("应返回被回复的消息 12，实际 %+v", got)
+	}
+	if got := replyTarget(&tgbotapi.Message{MessageID: 51, Chat: chat, Text: "/reg"}); got.Valid() {
+		t.Errorf("不是回复时应返回零值，实际 %+v", got)
+	}
+	// 话题群里每条消息都自带指向"话题创建"服务消息的回复，那不是用户主动回复的。
+	inTopic := &tgbotapi.Message{
+		MessageID: 52, Chat: chat, Text: "/reg",
+		ReplyToMessage: &tgbotapi.Message{MessageID: 3, Chat: chat, ForumTopicCreated: &tgbotapi.ForumTopicCreated{}},
+	}
+	if got := replyTarget(inTopic); got.Valid() {
+		t.Errorf("话题根消息不算回复目标，实际 %+v", got)
+	}
+}

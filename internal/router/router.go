@@ -403,8 +403,10 @@ func (r *Router) handleMessage(u tgbotapi.Update) error {
 	cmd := strings.Fields(text)[0]
 	key := ports.DispatchKey{ChatID: chatID, UserID: userID}
 	msgRef := toRef(m)
+	// /reg（回复一条消息）要的是被回复的那条消息，不是命令消息本身。
+	replyRef := replyTarget(m)
 	if err := r.dispatch.Submit(context.Background(), ports.LaneCommand, key, func(ctx context.Context) error {
-		return r.svc.HandleCommand(ctx, chatID, userID, displayName, cmd, text, msgRef)
+		return r.svc.HandleCommand(ctx, chatID, userID, displayName, cmd, text, replyRef)
 	}); err != nil {
 		ctx, cancel := r.criticalCtx()
 		defer cancel()
@@ -477,6 +479,17 @@ func (r *Router) criticalCtx() (context.Context, context.CancelFunc) {
 func (r *Router) selfID() int64 {
 	id, _ := r.client.Self()
 	return id
+}
+
+// replyTarget 返回这条消息所回复的那条消息；不是回复时返回零值。
+//
+// 话题群里，话题内的每条消息都自带一个指向"话题创建"服务消息的 reply_to_message，
+// 那不是用户主动回复的，不算。
+func replyTarget(m *tgbotapi.Message) domain.MessageRef {
+	if m.ReplyToMessage == nil || m.ReplyToMessage.ForumTopicCreated != nil {
+		return domain.MessageRef{}
+	}
+	return toRef(m.ReplyToMessage)
 }
 
 func toRef(m *tgbotapi.Message) domain.MessageRef {
