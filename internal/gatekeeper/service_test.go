@@ -612,8 +612,8 @@ func TestCorrectAnswerPasses(t *testing.T) {
 	}
 }
 
-// TestWrongAnswerKicksAndSchedulesUnban 验证答错后踢出，并在配置时间后解封。
-func TestWrongAnswerKicksAndSchedulesUnban(t *testing.T) {
+// TestWrongAnswerKicksWithTimedBan 验证答错后踢出：一条定时封禁，到期由 Telegram 自动解除。
+func TestWrongAnswerKicksWithTimedBan(t *testing.T) {
 	svc, api, registry, _ := testService(t, nil)
 	ctx := context.Background()
 	if err := svc.OnMembersJoinedWithJoinMessage(ctx, -100, 1,
@@ -638,14 +638,10 @@ func TestWrongAnswerKicksAndSchedulesUnban(t *testing.T) {
 	if len(api.restored) != 0 {
 		t.Fatalf("答错不应恢复权限: %+v", api.restored)
 	}
-	if len(api.unbanned) != 0 {
-		t.Fatalf("解封尚未到点，不应执行: %+v", api.unbanned)
-	}
-	// 到点之后再跑一次，解封生效。
-	time.Sleep(10 * time.Millisecond)
-	svc.runDueEffects(ctx)
-	if len(api.unbanned) != 0 {
-		t.Fatalf("解封时间未到（30 秒）不应执行: %+v", api.unbanned)
+	// 测试配置的 kick_unban_after_seconds=30 不到定时封禁的下限，按 60 秒算。
+	assertTempBan(t, api.banned[0], 60)
+	if len(api.unbanned) != 0 || countKind(pendingEffectKinds(t, registry), domain.EffectUnban) != 0 {
+		t.Fatalf("定时封禁到期自动解除，不应再有解封任务: %+v", api.unbanned)
 	}
 }
 
@@ -1119,8 +1115,8 @@ func TestRequestModeApprovesOnCorrectAnswer(t *testing.T) {
 	}
 }
 
-// TestAdminBanCancelsTemporaryUnban 验证管理员封禁优先于临时解封。
-func TestAdminBanCancelsTemporaryUnban(t *testing.T) {
+// TestAdminBanSchedulesNoUnban 验证管理员封禁是一条定时封禁（默认 7 天），不带任何解封任务。
+func TestAdminBanSchedulesNoUnban(t *testing.T) {
 	svc, api, registry, _ := testService(t, nil)
 	ctx := context.Background()
 	if err := svc.OnMembersJoinedWithJoinMessage(ctx, -100, 1,
@@ -1143,7 +1139,8 @@ func TestAdminBanCancelsTemporaryUnban(t *testing.T) {
 	if len(api.banned) != 1 {
 		t.Fatalf("管理员封禁应当生效: %+v", api.banned)
 	}
-	if len(api.unbanned) != 0 {
+	assertTempBan(t, api.banned[0], 7*24*3600)
+	if len(api.unbanned) != 0 || countKind(pendingEffectKinds(t, registry), domain.EffectUnban) != 0 {
 		t.Fatalf("管理员封禁后不应当有解封: %+v", api.unbanned)
 	}
 }

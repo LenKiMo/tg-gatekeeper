@@ -87,7 +87,12 @@ gatekeeper:
   option_count: 12
   min_option_count: 6
   timeout_seconds: 60
-  kick_unban_after_seconds: 60     # 踢出后多久解封（允许重新入群再试）
+  # 踢出（答错 / 超时 / 没验证就发言）= 封禁这么多秒后由 Telegram 自动解封，之后可以
+  # 重新入群再试。0 = 不解封（永久）；1..59 按 60 处理（Telegram 把不足 30 秒的封禁
+  # 到期时间当成永久）。
+  kick_unban_after_seconds: 60
+  # 管理员在卡片上点"🚫 封禁"的封禁时长（秒），默认 7 天；0 = 永久。
+  admin_ban_seconds: 604800
   block_pending_messages: true     # 待验证用户发言即按违规处置
   failure_policy: deny             # deny（拒之门外）| allow（放行，安全性下降）
   # failure_policy=deny 时，因机器人自身故障（题目发不出去 / 出不了题）把新人请出去的

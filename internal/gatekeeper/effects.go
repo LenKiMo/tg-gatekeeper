@@ -80,7 +80,7 @@ func (s *Service) executeEffect(ctx context.Context, ef domain.Effect) {
 		}
 		s.audit(ctx, ports.AuditEvent{
 			Event: "effect.done", Effect: string(ef.Kind), SessionID: ef.SessionID,
-			Attempt: ef.Attempts + 1, Result: "ok",
+			Attempt: ef.Attempts + 1, Result: "ok", Extra: banAuditExtra(ef, nil),
 		})
 		return
 	}
@@ -96,7 +96,7 @@ func (s *Service) executeEffect(ctx context.Context, ef domain.Effect) {
 		s.audit(ctx, ports.AuditEvent{
 			Event: "effect.dead_letter", Effect: string(ef.Kind), SessionID: ef.SessionID,
 			Attempt: ef.Attempts + 1, Result: "dropped", ErrorClass: classify(err),
-			Extra: map[string]string{"error": truncate(err.Error(), 200)},
+			Extra: banAuditExtra(ef, map[string]string{"error": truncate(err.Error(), 200)}),
 		})
 		s.log.Error("副作用放弃重试", "effect_id", ef.ID, "kind", ef.Kind, "err", err)
 		return
@@ -109,8 +109,25 @@ func (s *Service) executeEffect(ctx context.Context, ef domain.Effect) {
 	s.audit(ctx, ports.AuditEvent{
 		Event: "effect.retry", Effect: string(ef.Kind), SessionID: ef.SessionID,
 		Attempt: ef.Attempts + 1, Result: "retry", ErrorClass: classify(err),
-		Extra: map[string]string{"next": next.Format(time.RFC3339)},
+		Extra: banAuditExtra(ef, map[string]string{"next": next.Format(time.RFC3339)}),
 	})
+}
+
+// banAuditExtra 给封禁类副作用的审计补上 ban_seconds 与 reason（其它副作用原样返回 extra）。
+func banAuditExtra(ef domain.Effect, extra map[string]string) map[string]string {
+	if ef.Kind != domain.EffectBan {
+		return extra
+	}
+	seconds, ok := ef.Payload["seconds"]
+	if !ok {
+		return extra // 升级前落库的封禁任务没有这两个字段
+	}
+	if extra == nil {
+		extra = map[string]string{}
+	}
+	extra["ban_seconds"] = seconds
+	extra["reason"] = ef.Payload["reason"]
+	return extra
 }
 
 func (s *Service) backoff(attempt int) time.Duration {
@@ -144,8 +161,13 @@ func (s *Service) doEffect(ctx context.Context, ef domain.Effect) error {
 	case domain.EffectRestorePermissions:
 		return s.api.RestorePermissions(ctx, chatID, userID)
 	case domain.EffectBan:
+		if _, ok := p["seconds"]; ok {
+			return s.applyTempBan(ctx, domain.GroupConfig{ChatID: chatID}, userID, ParseInt(p["seconds"]), banReason(p["reason"]))
+		}
+		// 升级前落库的封禁任务（绝对到期时间 + 配套的独立解封任务）：按原样执行完。
 		return s.api.Ban(ctx, chatID, userID, p["revoke"] == "1", ParseInt(p["until"]))
 	case domain.EffectUnban:
+		// 新版本不再产生解封任务（踢出改成了定时封禁）；保留执行只为把升级前落库的做完。
 		return s.api.Unban(ctx, chatID, userID, true)
 	case domain.EffectApprove:
 		return s.api.ApproveJoinRequest(ctx, chatID, userID)

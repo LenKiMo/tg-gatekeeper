@@ -246,19 +246,14 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 			}
 		}
 		kick := func() {
-			// until=0：先永久封禁，随后由 kick_unban_after_seconds 的解封效果撤回，
-			// 效果是"踢出并允许再来一次"。
+			// 踢出 = 一条定时封禁：kick_unban_after_seconds 秒后由 Telegram 自动解除，
+			// 效果是"请出去，稍后可以再来"。不再另排解封任务：封禁和解封是两条各自重试的
+			// 副作用，封禁被重试拖过解封的到点时间时，解封先空跑、之后封禁成功就没人解了。
+			// 到期时间在执行时才换算（见 applyTempBan）。配成 0 = 不解封（永久），仅限显式配置。
 			add(domain.EffectBan, withText(chatUser, map[string]string{
-				"revoke": boolStr(cfg.Gatekeeper.RevokeMessagesOnBan),
-				"until":  "0",
+				"seconds": itoa(int64(cfg.KickUnbanAfter().Seconds())),
+				"reason":  string(banReasonKick),
 			}), 0)
-			if cfg.KickUnbanAfter() > 0 {
-				add(domain.EffectUnban, map[string]string{
-					"chat_id": itoa(before.Key.ChatID),
-					"user_id": itoa(before.Key.UserID),
-					"delay":   itoa(int64(cfg.KickUnbanAfter().Seconds())),
-				}, cfg.KickUnbanAfter())
-			}
 		}
 		welcome := func() {
 			if group.Welcome == "" && group.RulesMessageID == 0 {
@@ -336,12 +331,12 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 			if before.Mode == domain.SessionRequest {
 				add(domain.EffectDecline, chatUser, 0)
 			}
-			// 管理员手动封禁：显式永久（until=0）。人工判断不该被自动策略改短。
+			// 管理员手动封禁：admin_ban_seconds（默认 7 天）后由 Telegram 自动解除；
+			// 配成 0 才是永久。申请模式下同样是"拒绝申请 + 这段时间内不能再申请"。
 			add(domain.EffectBan, withText(chatUser, map[string]string{
-				"revoke": boolStr(cfg.Gatekeeper.RevokeMessagesOnBan),
-				"until":  "0",
+				"seconds": itoa(int64(cfg.Gatekeeper.AdminBanSeconds)),
+				"reason":  string(banReasonAdmin),
 			}), 0)
-			// 管理员封禁优先于一切临时处置：撤销尚未执行的解封。
 			deleteChallenge()
 			deleteJoin()
 			deleteAdminCard()
@@ -355,13 +350,6 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 // ---------------------------------------------------------------- 小工具
 
 func itoa(v int64) string { return fmt.Sprintf("%d", v) }
-
-func boolStr(b bool) string {
-	if b {
-		return "1"
-	}
-	return "0"
-}
 
 func withText(base domain.EffectPayload, extra map[string]string) domain.EffectPayload {
 	out := domain.EffectPayload{}

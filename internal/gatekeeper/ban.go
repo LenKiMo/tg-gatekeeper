@@ -15,6 +15,10 @@ const (
 	banReasonSendFailed banReason = "challenge_send_failed"
 	// banReasonGenerateFailed 出不了题（题库为空/损坏、图片取不到）。
 	banReasonGenerateFailed banReason = "challenge_generate_failed"
+	// banReasonKick 自动踢出：答错、超时、没验证就发言。
+	banReasonKick banReason = "kick"
+	// banReasonAdmin 管理员在题目卡片/管理员卡片上点了"封禁"。
+	banReasonAdmin banReason = "admin_ban"
 )
 
 // botFault 判断这次封禁是不是机器人自身故障造成的。这类封禁错不在用户，

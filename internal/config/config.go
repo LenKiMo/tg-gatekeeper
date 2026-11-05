@@ -156,6 +156,8 @@ type Gatekeeper struct {
 	// FailureBanSeconds 是 failure_policy=deny 时，因机器人自身故障（题目发不出去、
 	// 出不了题）把新成员请出去的封禁时长（秒），不能小于 60。到期由 Telegram 自动解除。
 	FailureBanSeconds int `yaml:"failure_ban_seconds"`
+	// AdminBanSeconds 是管理员在卡片上点"封禁"的封禁时长（秒）；0 表示永久。
+	AdminBanSeconds int `yaml:"admin_ban_seconds"`
 	// CaptionContact 是申请模式下"用户还没和机器人交互过"时，发在群里的提示文案。
 	// 支持 {mention}；机器人无法主动私聊没点过它的用户，只能请对方先点一下。
 	CaptionContact string `yaml:"caption_contact"`
@@ -410,6 +412,7 @@ func Default() *Config {
 			KickUnbanAfterSeconds: 60,
 			FailurePolicy:         "deny",
 			FailureBanSeconds:     600,
+			AdminBanSeconds:       7 * 24 * 3600,
 			ShortagePolicy:        "deny",
 			MinOptionCount:        6,
 			MaxImageAttempts:      4,
@@ -631,6 +634,9 @@ func (c *Config) Validate() error {
 	if c.Gatekeeper.FailureBanSeconds < 60 {
 		// Telegram 把"距现在不足 30 秒"的封禁到期时间当成永久封禁，这里留足余量。
 		return fmt.Errorf("gatekeeper.failure_ban_seconds 不能小于 60，当前 %d", c.Gatekeeper.FailureBanSeconds)
+	}
+	if s := c.Gatekeeper.AdminBanSeconds; s != 0 && s < 60 {
+		return fmt.Errorf("gatekeeper.admin_ban_seconds 只能是 0（永久）或不小于 60，当前 %d", s)
 	}
 	switch c.Gatekeeper.ShortagePolicy {
 	case "deny", "reduce":
