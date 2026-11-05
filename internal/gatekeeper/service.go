@@ -256,7 +256,9 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 			}), 0)
 		}
 		welcome := func() {
-			if group.Welcome == "" && group.RulesMessageID == 0 {
+			// 有欢迎语或有群规才发欢迎消息。群规两种来源都算：/reg <链接> 设的显式链接、
+			// /reg（回复消息）设的消息 ID——以前只认后者。
+			if group.Welcome == "" && groupRulesLink(group, before.Key.ChatID) == "" {
 				return
 			}
 			// 昵称取会话里记录的入群昵称：此刻事件里的 actor 是"点击按钮的人"或"管理员"，
@@ -275,6 +277,10 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 				"text":         text,
 				"delete_after": itoa(int64(cfg.Commands.WelcomeDeleteAfterSeconds)),
 			}, 0)
+		}
+		// setTag 给通过验证的成员打标签。它不依赖欢迎语：以前写在 welcome() 里、排在
+		// 提前返回之后，只设了 /tag 而没设欢迎语和群规的群永远打不上标签。
+		setTag := func() {
 			if group.Tag != "" {
 				add(domain.EffectSetTag, map[string]string{
 					"chat_id": itoa(before.Key.ChatID),
@@ -292,6 +298,7 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 				add(domain.EffectRestorePermissions, chatUser, 0)
 			}
 			welcome()
+			setTag()
 			deleteChallenge()
 			deleteJoin()
 			deleteAdminCard()
