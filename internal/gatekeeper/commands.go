@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/LenKiMo/tg-gatekeeper/internal/config"
 	"github.com/LenKiMo/tg-gatekeeper/internal/domain"
@@ -105,10 +106,18 @@ func (s *Service) NotifyBusy(ctx context.Context, chatID, userID int64, replyTo 
 //
 // msgRef 是这条命令所回复的那条消息（不是回复时为零值），目前只有 /reg 用它。
 func (s *Service) HandleCommand(ctx context.Context, chatID, userID int64, displayName, command, text string, msgRef domain.MessageRef) error {
-	cmd := strings.ToLower(strings.TrimSpace(command))
-	if idx := strings.IndexByte(cmd, '@'); idx > 0 {
-		cmd = cmd[:idx]
+	cmd, target := splitCommandTarget(command)
+	// 带 @后缀 的命令是指名发给某个机器人的：不是发给我们的就不处理。关了隐私模式之后，
+	// 群里发给别的机器人的 /welcome@OtherBot、/tag@OtherBot 我们也会收到。
+	if target != "" {
+		if _, self := s.api.Self(); self != "" && !strings.EqualFold(target, self) {
+			return nil
+		}
 	}
+	// 在这里一次性把消息开头的命令段规范成不带后缀的小写命令。各个 cmdXxx 都用
+	// TrimPrefix(text, "/cmd") 取参数，不规范的话 "/tag@Bot clear" 剥完剩下 "@Bot clear"，
+	// 会被当成标签内容存进去。
+	text = normalizeCommandText(cmd, text)
 	// 私聊命令（申请者不会用到，这里只处理群内命令），非管理员命令直接忽略。
 	switch cmd {
 	case "/ping":
@@ -145,6 +154,27 @@ func (s *Service) HandleCommand(ctx context.Context, chatID, userID int64, displ
 }
 
 func (s *Service) ownerID() int64 { return s.cfg.Bot.OwnerID }
+
+// splitCommandTarget 把 "/Cmd@BotName" 拆成小写命令 "/cmd" 和它指名的机器人 "BotName"
+// （没有 @后缀 时 target 为空）。
+func splitCommandTarget(command string) (cmd, target string) {
+	cmd = strings.ToLower(strings.TrimSpace(command))
+	if idx := strings.IndexByte(cmd, '@'); idx > 0 {
+		cmd, target = cmd[:idx], cmd[idx+1:]
+	}
+	return cmd, target
+}
+
+// normalizeCommandText 把消息开头的命令段换成规范命令 cmd，后面的参数原样保留
+// （含换行：欢迎语可以是多行的）。
+func normalizeCommandText(cmd, text string) string {
+	text = strings.TrimSpace(text)
+	end := strings.IndexFunc(text, unicode.IsSpace)
+	if end < 0 {
+		return cmd
+	}
+	return cmd + text[end:]
+}
 
 // replyTemp 发送一条会在 response_delete_after_seconds 后被删除的临时提示。
 func (s *Service) replyTemp(ctx context.Context, chatID, userID int64, text string) error {
