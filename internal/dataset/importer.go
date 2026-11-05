@@ -11,6 +11,8 @@ package dataset
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -259,22 +261,32 @@ func (f *File) DownloadImages(ctx context.Context, dir, userAgent string) (int, 
 		userAgent = "tg-gatekeeper-dataset/1.0"
 	}
 	okCount, failCount := 0, 0
+	// 重名会直接毁掉题库：非 ASCII 标签过 slug 之后是空串，以前所有这类图都落到同一个
+	// ".jpg" 上，后到的条目还会因为"文件已存在"被当成下载成功、指向同一张图。这里按
+	// 显式 ID > slug > 引用哈希 取名，并保证同一次运行内不重名。
+	used := map[string]string{}
 	for i := range f.Items {
 		ref := f.Items[i].Image
 		if !strings.HasPrefix(ref, "http://") && !strings.HasPrefix(ref, "https://") {
 			continue
 		}
-		name := f.Items[i].ID
-		if name == "" {
-			name = slug(f.Items[i].Label)
+		stem := f.Items[i].ID
+		if stem == "" {
+			stem = slug(f.Items[i].Label)
 		}
+		if stem == "" {
+			stem = refDigest(ref)
+		}
+		stem = uniqueStem(stem, ref, used)
 		ext := filepath.Ext(strings.Split(ref, "?")[0])
 		if ext == "" || len(ext) > 5 {
 			ext = ".jpg"
 		}
-		dst := filepath.Join(dir, name+ext)
+		name := stem + ext
+		dst := filepath.Join(dir, name)
+		rel := filepath.ToSlash(filepath.Join(filepath.Base(dir), name))
 		if _, err := os.Stat(dst); err == nil {
-			f.Items[i].Image = filepath.ToSlash(filepath.Join(filepath.Base(dir), name+ext))
+			f.Items[i].Image = rel
 			okCount++
 			continue
 		}
@@ -304,7 +316,7 @@ func (f *File) DownloadImages(ctx context.Context, dir, userAgent string) (int, 
 			failCount++
 			continue
 		}
-		f.Items[i].Image = filepath.ToSlash(filepath.Join(filepath.Base(dir), name+ext))
+		f.Items[i].Image = rel
 		okCount++
 	}
 	return okCount, failCount, nil
@@ -540,4 +552,22 @@ var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
 func slug(s string) string {
 	out := slugRe.ReplaceAllString(strings.ToLower(s), "_")
 	return strings.Trim(out, "_")
+}
+
+// refDigest 给"没有 ID、标签也取不出名字"的条目一个稳定短名（中文标签的 slug 是空串）。
+func refDigest(ref string) string {
+	sum := sha256.Sum256([]byte(ref))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
+// uniqueStem 保证同一次运行里不同引用拿到不同文件名：重名时追加 -2、-3…
+func uniqueStem(base, ref string, used map[string]string) string {
+	stem := base
+	for n := 2; ; n++ {
+		if owner, ok := used[stem]; !ok || owner == ref {
+			used[stem] = ref
+			return stem
+		}
+		stem = fmt.Sprintf("%s-%d", base, n)
+	}
 }
