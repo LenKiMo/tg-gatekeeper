@@ -153,6 +153,9 @@ type Gatekeeper struct {
 	// AdWordBanDays 是广告词命中的封禁天数；0 表示永久封禁。
 	// 广告号通常很快就被注销丢弃，临时封禁可以避免群黑名单无限膨胀。
 	AdWordBanDays int `yaml:"ad_word_ban_days"`
+	// FailureBanSeconds 是 failure_policy=deny 时，因机器人自身故障（题目发不出去、
+	// 出不了题）把新成员请出去的封禁时长（秒），不能小于 60。到期由 Telegram 自动解除。
+	FailureBanSeconds int `yaml:"failure_ban_seconds"`
 	// CaptionContact 是申请模式下"用户还没和机器人交互过"时，发在群里的提示文案。
 	// 支持 {mention}；机器人无法主动私聊没点过它的用户，只能请对方先点一下。
 	CaptionContact string `yaml:"caption_contact"`
@@ -406,6 +409,7 @@ func Default() *Config {
 			TimeoutSeconds:        60,
 			KickUnbanAfterSeconds: 60,
 			FailurePolicy:         "deny",
+			FailureBanSeconds:     600,
 			ShortagePolicy:        "deny",
 			MinOptionCount:        6,
 			MaxImageAttempts:      4,
@@ -623,6 +627,10 @@ func (c *Config) Validate() error {
 	case "deny", "allow":
 	default:
 		return fmt.Errorf("gatekeeper.failure_policy 只能是 deny 或 allow，当前 %q", c.Gatekeeper.FailurePolicy)
+	}
+	if c.Gatekeeper.FailureBanSeconds < 60 {
+		// Telegram 把"距现在不足 30 秒"的封禁到期时间当成永久封禁，这里留足余量。
+		return fmt.Errorf("gatekeeper.failure_ban_seconds 不能小于 60，当前 %d", c.Gatekeeper.FailureBanSeconds)
 	}
 	switch c.Gatekeeper.ShortagePolicy {
 	case "deny", "reduce":

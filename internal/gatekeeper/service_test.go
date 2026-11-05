@@ -31,6 +31,7 @@ type apiCall struct {
 	labels  []string // 按钮文案（按行展开，用于核对最后一行是不是放行/封禁）
 	urls    []string // 链接按钮的 URL
 	until   int64    // 封禁到期时间（unix 秒；0 = 永久）
+	revoke  bool     // 封禁时是否撤回历史消息
 }
 
 type fakeAPI struct {
@@ -50,8 +51,10 @@ type fakeAPI struct {
 	// challengeErr 非 nil 时，SendChallenge 直接失败——用来模拟申请模式下
 	// "用户没点过机器人，Telegram 不允许主动私聊"。
 	challengeErr error
-	nextMessage  int64
-	admins       map[int64]bool
+	// banErr 非 nil 时，Ban 记录调用后返回它——用来模拟"目标是管理员，封不了"。
+	banErr      error
+	nextMessage int64
+	admins      map[int64]bool
 	// statuses 覆盖 GetMemberStatus 的返回值；缺省一律 member。
 	statuses map[int64]string
 }
@@ -75,9 +78,9 @@ func (f *fakeAPI) RestorePermissions(_ context.Context, chatID, userID int64) er
 	return nil
 }
 
-func (f *fakeAPI) Ban(_ context.Context, chatID, userID int64, _ bool, until int64) error {
-	f.banned = append(f.banned, apiCall{name: "ban", chatID: chatID, userID: userID, until: until})
-	return nil
+func (f *fakeAPI) Ban(_ context.Context, chatID, userID int64, revoke bool, until int64) error {
+	f.banned = append(f.banned, apiCall{name: "ban", chatID: chatID, userID: userID, until: until, revoke: revoke})
+	return f.banErr
 }
 
 func (f *fakeAPI) Unban(_ context.Context, chatID, userID int64, _ bool) error {

@@ -90,6 +90,10 @@ gatekeeper:
   kick_unban_after_seconds: 60     # 踢出后多久解封（允许重新入群再试）
   block_pending_messages: true     # 待验证用户发言即按违规处置
   failure_policy: deny             # deny（拒之门外）| allow（放行，安全性下降）
+  # failure_policy=deny 时，因机器人自身故障（题目发不出去 / 出不了题）把新人请出去的
+  # 封禁时长（秒），不能小于 60。到期后 Telegram 自动解封，但人已经不在群里了，需要
+  # 自己重新入群（机器人不会把人拉回来）。这类封禁不撤回对方的历史消息。
+  failure_ban_seconds: 600
   shortage_policy: deny            # deny（数据不足则不放行）| reduce（降级到 min_option_count）
   max_image_attempts: 4
   invited_member_policy: verify    # verify | allow

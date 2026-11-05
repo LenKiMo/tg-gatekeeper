@@ -436,11 +436,7 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 			Kind: domain.EventCancel, SessionID: session.ID, At: time.Now(),
 		}, nil)
 		if mode == domain.SessionJoin {
-			if s.cfg.Gatekeeper.FailurePolicy == "allow" {
-				_ = s.api.RestorePermissions(ctx, group.ChatID, userID)
-			} else {
-				_ = s.api.Ban(ctx, group.ChatID, userID, s.cfg.Gatekeeper.RevokeMessagesOnBan, 0)
-			}
+			s.challengeFailed(ctx, group, userID, displayName, banReasonSendFailed, err)
 		}
 		return domain.Session{}, fmt.Errorf("发送题目失败: %w", err)
 	}
@@ -469,6 +465,38 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 		}
 	}
 	return attached, nil
+}
+
+// challengeFailed 按 failure_policy 处置"入群模式下题目没能发到新成员面前"。
+//
+// deny：封禁 failure_ban_seconds 秒，到期由 Telegram 自动解除。这是机器人这边的故障
+// （集中入群触发限流、网络抖动、题目文案转义写错），所以不是永久封禁，也不撤回对方的
+// 历史消息。封禁只发一次、失败不重试：目标是管理员这类封不了的人时每次都会 403，
+// 重试只会变成请求风暴。
+// allow：恢复权限，放行。
+//
+// 审计只记错误分类，不记错误原文（网络错误的原文里带着含 bot token 的请求地址）。
+func (s *Service) challengeFailed(ctx context.Context, group domain.GroupConfig, userID int64,
+	displayName string, reason banReason, cause error) {
+	ev := ports.AuditEvent{
+		Event: "verify.challenge_failed", ChatID: group.ChatID, UserID: userID,
+		Mode: string(domain.SessionJoin), DisplayName: displayName,
+		ErrorClass: classify(cause), Extra: map[string]string{"reason": string(reason)},
+	}
+	if s.cfg.Gatekeeper.FailurePolicy == "allow" {
+		_ = s.api.RestorePermissions(ctx, group.ChatID, userID)
+		ev.Result = "allow"
+		s.audit(ctx, ev)
+		return
+	}
+	seconds := int64(s.cfg.Gatekeeper.FailureBanSeconds)
+	ev.Result = "ban"
+	ev.Extra["ban_seconds"] = itoa(seconds)
+	if err := s.applyTempBan(ctx, group, userID, seconds, reason); err != nil {
+		ev.Result = "ban_failed"
+		ev.ErrorClass = classify(err)
+	}
+	s.audit(ctx, ev)
 }
 
 // generate 抽题；图片解析失败时换条目重试，避免单张坏图卡死整个验证。

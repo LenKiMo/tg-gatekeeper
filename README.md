@@ -130,6 +130,7 @@ gatekeeper:
   timeout_seconds: 60
   shortage_policy: deny         # deny=题库不足时不放行；reduce=降级到 min_option_count
   failure_policy: deny          # 基础设施故障时 deny（拒绝）/ allow（放行，会告警）
+  failure_ban_seconds: 600      # deny 时的封禁秒数；到期自动解封，需本人重新入群
   block_pending_messages: true  # 未通过验证就发言 → 立即处置
 
 moderation:
