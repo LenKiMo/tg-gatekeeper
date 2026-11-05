@@ -153,6 +153,9 @@ type Gatekeeper struct {
 	// AdWordBanDays 是广告词命中的封禁天数；0 表示永久封禁。
 	// 广告号通常很快就被注销丢弃，临时封禁可以避免群黑名单无限膨胀。
 	AdWordBanDays int `yaml:"ad_word_ban_days"`
+	// AdWordRequestBanDays 是申请模式下命中广告词时额外封禁的天数；默认 0 = 只拒绝申请。
+	// 申请人还没进群，封禁只会往群黑名单里堆东西；确实被重复申请冲击的群再把它配成 3 之类。
+	AdWordRequestBanDays int `yaml:"ad_word_request_ban_days"`
 	// FailureBanSeconds 是 failure_policy=deny 时，因机器人自身故障（题目发不出去、
 	// 出不了题）把新成员请出去的封禁时长（秒），不能小于 60。到期由 Telegram 自动解除。
 	FailureBanSeconds int `yaml:"failure_ban_seconds"`
@@ -421,6 +424,7 @@ func Default() *Config {
 			AdminMemberPolicy:     "allow",
 			RevokeMessagesOnBan:   true,
 			AdWordBanDays:         30,
+			AdWordRequestBanDays:  0,
 			CaptionContact:        "{mention}，请先点开机器人并按「开始」，验证题目会私聊发给你。",
 			ContactButton:         "打开机器人",
 			ContactTimeoutSeconds: 900,
@@ -574,12 +578,23 @@ func expandEnvStruct(v reflect.Value) {
 			expandEnvStruct(v.Index(i))
 		}
 	case reflect.Map:
+		if v.IsNil() || !v.CanSet() {
+			return
+		}
+		// map 的值取出来是只读副本，必须做成可设置的值再递归展开——provider.definitions
+		// 这类 map[string]结构体 的值是结构体，旧实现只处理 map[string]string，
+		// 结果里面的 bearer_token / dsn 里写的 ${ENV} 原样留在字面值上。
 		iter := v.MapRange()
+		type entry struct{ key, val reflect.Value }
+		entries := make([]entry, 0, v.Len())
 		for iter.Next() {
-			val := iter.Value()
-			if val.Kind() == reflect.String && v.CanSet() {
-				v.SetMapIndex(iter.Key(), reflect.ValueOf(expandEnv(val.String())))
-			}
+			entries = append(entries, entry{key: iter.Key(), val: iter.Value()})
+		}
+		for _, e := range entries {
+			cp := reflect.New(e.val.Type()).Elem()
+			cp.Set(e.val)
+			expandEnvStruct(cp)
+			v.SetMapIndex(e.key, cp)
 		}
 	case reflect.String:
 		if v.CanSet() {

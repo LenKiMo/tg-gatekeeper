@@ -110,6 +110,9 @@ gatekeeper:
   # 广告词命中的封禁天数；0 = 永久封禁。广告号很快会被注销，默认给 30 天就够，
   # 免得群的黑名单随时间无限膨胀。
   ad_word_ban_days: 30
+  # 申请审批模式下命中广告词时额外封禁的天数；默认 0 = 只拒绝申请（不碰群黑名单）。
+  # 申请人还没进群，封禁只在"被重复申请冲击"的场景下才值得开，建议 3。
+  ad_word_request_ban_days: 0
   answer_wrong_alert: true
   stale_callback_alert: true
   button_columns: 2
