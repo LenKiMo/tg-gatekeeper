@@ -104,6 +104,12 @@ func (s *YAMLStore) EnsureGroup(_ context.Context, chatID int64, defaults domain
 	defaults.ChatID = chatID
 	defaults.Revision = 1
 	defaults.UpdatedAt = time.Now()
+	if !s.writes {
+		// runtime_writes=false：配置文件是唯一真值，运行时不许写盘。这里连内存也不存：
+		// 存了会让本进程的默认值和文件里的真实配置分叉（重启后又变回文件值），
+		// 排查时极易误判。返回默认值即可，反正下次调用会重新算一遍。
+		return defaults, nil
+	}
 	s.data[chatID] = defaults
 	if err := s.flushLocked(); err != nil {
 		return domain.GroupConfig{}, err
