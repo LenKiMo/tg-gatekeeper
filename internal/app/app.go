@@ -155,7 +155,13 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	// 客户端库的 Run() 没有停止接口：退出靠取消 ctx + 进程返回。
+	//
+	// shutdownDone 在"信号触发的有序停机已完成"时关闭。进程退出的依据是"清理做完了"，
+	// 不是"更新循环消失了"：关掉客户端后循环未必返回（1.1.3 首次上线就栽在这里——
+	// 停机日志全打完，进程却挂到 systemd 的 90 秒超时被 SIGKILL，服务状态显示 failed）。
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		select {
 		case sig := <-sigCh:
 			a.log.Info("收到退出信号，开始优雅停止", "signal", sig.String())
@@ -181,10 +187,14 @@ func (a *App) Run(ctx context.Context) error {
 	case <-runCtx.Done():
 		// 上层 ctx 被取消（测试或外部超时）：同样走一遍有序停机再返回。
 		doShutdown()
+		<-shutdownDone
+		return nil
+	case <-shutdownDone:
+		// 信号触发的停机：清理已经做完，直接退出，不等更新循环。
 		return nil
 	case <-loopDone:
 		if stopping.Load() {
-			// 信号触发的停机：shutdown 关掉客户端后更新循环自然结束，属正常退出。
+			// 停机过程中循环先结束：清理同样已经做完。
 			a.log.Info("已按退出信号停止")
 			return nil
 		}

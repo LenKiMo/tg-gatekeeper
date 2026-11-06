@@ -7,16 +7,29 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
 
+// tempDir 建临时目录并在结束时清理；清理失败只忽略，不让 Windows 上偶发的
+// "目录非空/句柄未释放"把测试弄红（t.TempDir 会 fail 测试）。
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "tg-gatekeeper-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 // TestLocalFileReplacementInvalidatesCache 源图被原地替换（路径不变、内容变了）时，
 // 旧缓存必须当场作废，而不是顶替新图直到 TTL 过期。
 func TestLocalFileReplacementInvalidatesCache(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	cfg := testConfig()
 	cfg.LocalRoots = []string{dir}
 	cfg.Cache.Dir = filepath.Join(dir, "cache")
@@ -81,7 +94,7 @@ func TestHTTPCacheRevalidatesWithETag(t *testing.T) {
 	cfg := testConfig()
 	cfg.HTTP.AllowPrivateIPs = true
 	cfg.HTTP.AllowedHosts = []string{"127.0.0.1"}
-	cfg.Cache.Dir = t.TempDir()
+	cfg.Cache.Dir = tempDir(t)
 	r, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +135,7 @@ func TestHTTPCacheRevalidatesWithETag(t *testing.T) {
 func TestAllowedSchemesIsPerScheme(t *testing.T) {
 	cfg := testConfig()
 	cfg.AllowedSchemes = []string{"file", "https"}
-	cfg.Cache.Dir = t.TempDir()
+	cfg.Cache.Dir = tempDir(t)
 	r, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
