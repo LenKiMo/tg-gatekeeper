@@ -31,3 +31,6 @@
   日志与审计里的错误文本会先把 bot token 换成 `[token]`。
 - `dataset --download-images` 为非 ASCII 标签生成可区分的文件名（以前全部落到同一个
   `.jpg` 上，并在重名时把别的图当成"已下载"）。
+- **行为反转**：移除 MySQL 后端，只保留 SQLite。`storage.group_store` 收窄为 `sqlite|yaml`、
+  `session_registry`/`deletion_queue` 收窄为 `sqlite|memory`、题库 SQL 源只支持 `driver: sqlite`；
+  老配置里写 `mysql` 会在启动自检阶段直接报错（见 docs/mysql-backend-assessment.md）。

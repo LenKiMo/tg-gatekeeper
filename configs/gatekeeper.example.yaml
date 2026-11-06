@@ -208,20 +208,15 @@ images:
     ttl_seconds: 604800
 
 storage:
-  group_store: sqlite              # sqlite | mysql | yaml
-  session_registry: sqlite         # sqlite | mysql | memory（memory 仅测试）
-  deletion_queue: sqlite           # sqlite | mysql | memory
+  group_store: sqlite              # sqlite | yaml
+  session_registry: sqlite         # sqlite | memory（memory 仅测试）
+  deletion_queue: sqlite           # sqlite | memory
   auto_migrate: true
   sqlite:
     path: ./data/gatekeeper.db
     wal: true
     busy_timeout_ms: 5000
     max_open_connections: 1
-  mysql:
-    dsn: ${MYSQL_DSN}
-    max_open_connections: 10
-    max_idle_connections: 5
-    connection_max_lifetime_seconds: 1800
   yaml:
     path: ./data/groups.yaml
     runtime_writes: true

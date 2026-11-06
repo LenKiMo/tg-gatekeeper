@@ -25,8 +25,8 @@ type Set struct {
 // New 按配置组装三种存储。
 //
 // 组合规则：
-//   - group_store: sqlite|mysql|yaml
-//   - session_registry / deletion_queue: sqlite|mysql|memory
+//   - group_store: sqlite|yaml
+//   - session_registry / deletion_queue: sqlite|memory
 //     YAML 群配置模式下，会话与队列仍然落在本地 SQLite（进程重启可恢复）。
 func New(ctx context.Context, cfg *config.Config) (*Set, error) {
 	set := &Set{}
@@ -35,19 +35,13 @@ func New(ctx context.Context, cfg *config.Config) (*Set, error) {
 	var sqlHandle *SQL
 	needSQL := false
 	for _, b := range []string{groupBackend, strings.ToLower(cfg.Storage.SessionRegistry), strings.ToLower(cfg.Storage.DeletionQueue)} {
-		if b == "sqlite" || b == "mysql" {
+		if b == "sqlite" {
 			needSQL = true
 		}
 	}
 	if needSQL {
-		backend := "sqlite"
-		for _, b := range []string{groupBackend, strings.ToLower(cfg.Storage.SessionRegistry), strings.ToLower(cfg.Storage.DeletionQueue)} {
-			if b == "mysql" {
-				backend = "mysql"
-			}
-		}
-		// 统一用同一个后端：同 DSN/同文件，避免一个部署里出现两套状态库。
-		h, err := Open(ctx, cfg, backend)
+		// 所有 SQL 状态统一落在一个 SQLite 文件里，避免一个部署出现两套状态库。
+		h, err := Open(ctx, cfg, "sqlite")
 		if err != nil {
 			return nil, err
 		}
@@ -57,7 +51,7 @@ func New(ctx context.Context, cfg *config.Config) (*Set, error) {
 	}
 
 	switch groupBackend {
-	case "sqlite", "mysql":
+	case "sqlite":
 		set.Groups = NewGroupStore(sqlHandle)
 	case "yaml":
 		ys, err := NewYAMLStore(cfg)
@@ -71,7 +65,7 @@ func New(ctx context.Context, cfg *config.Config) (*Set, error) {
 	}
 
 	switch strings.ToLower(cfg.Storage.SessionRegistry) {
-	case "sqlite", "mysql":
+	case "sqlite":
 		set.Registry = NewRegistry(sqlHandle)
 	case "memory":
 		set.Registry = NewMemRegistry()
@@ -81,7 +75,7 @@ func New(ctx context.Context, cfg *config.Config) (*Set, error) {
 	}
 
 	switch strings.ToLower(cfg.Storage.DeletionQueue) {
-	case "sqlite", "mysql":
+	case "sqlite":
 		set.Deletion = NewDeletionQueue(sqlHandle)
 	case "memory":
 		set.Deletion = NewMemDeletionQueue()

@@ -1,7 +1,8 @@
 // Package store 提供群配置、会话注册表与延时删除队列的持久化实现。
 //
-// 默认 SQLite（纯 Go 驱动，CGO_ENABLED=0 即可出单二进制），可选 MySQL；两者共用同一
-// 份 SQL 与同一份契约测试。memory 实现只用于测试：进程重启会丢失待验证会话。
+// 只支持 SQLite（纯 Go 驱动，CGO_ENABLED=0 即可出单二进制）：单机社群规模用不上
+// 分布式数据库，双方言维护成本远高于收益（见 docs/mysql-backend-assessment.md）。
+// memory 实现只用于测试：进程重启会丢失待验证会话。
 package store
 
 import (
@@ -19,16 +20,12 @@ import (
 	"github.com/LenKiMo/tg-gatekeeper/internal/domain"
 	"github.com/LenKiMo/tg-gatekeeper/internal/ports"
 
-	// SQLite 使用纯 Go 驱动；MySQL 用官方驱动。
-	_ "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
 )
 
-// schema 是建表语句。两种方言各一份，字段语义完全一致。
-var schemas = map[string][]string{
-	"sqlite": {
-		`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS groups (
+var schemaStatements = []string{
+	`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS groups (
 			chat_id INTEGER PRIMARY KEY,
 			enabled INTEGER NOT NULL DEFAULT 1,
 			mode TEXT NOT NULL DEFAULT 'join',
@@ -40,7 +37,7 @@ var schemas = map[string][]string{
 			revision INTEGER NOT NULL DEFAULT 1,
 			updated_at INTEGER NOT NULL DEFAULT 0
 		)`,
-		`CREATE TABLE IF NOT EXISTS sessions (
+	`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY,
 			chat_id INTEGER NOT NULL,
 			user_id INTEGER NOT NULL,
@@ -63,9 +60,9 @@ var schemas = map[string][]string{
 			version INTEGER NOT NULL DEFAULT 1,
 			updated_at INTEGER NOT NULL DEFAULT 0
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_sessions_key ON sessions(chat_id, user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state, expires_at)`,
-		`CREATE TABLE IF NOT EXISTS effects (
+	`CREATE INDEX IF NOT EXISTS idx_sessions_key ON sessions(chat_id, user_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state, expires_at)`,
+	`CREATE TABLE IF NOT EXISTS effects (
 			id TEXT PRIMARY KEY,
 			session_id TEXT NOT NULL,
 			kind TEXT NOT NULL,
@@ -75,9 +72,9 @@ var schemas = map[string][]string{
 			last_error TEXT NOT NULL DEFAULT '',
 			created_at INTEGER NOT NULL DEFAULT 0
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_effects_due ON effects(due_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_effects_session ON effects(session_id)`,
-		`CREATE TABLE IF NOT EXISTS deletions (
+	`CREATE INDEX IF NOT EXISTS idx_effects_due ON effects(due_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_effects_session ON effects(session_id)`,
+	`CREATE TABLE IF NOT EXISTS deletions (
 			id TEXT PRIMARY KEY,
 			chat_id INTEGER NOT NULL,
 			message_id INTEGER NOT NULL,
@@ -87,88 +84,21 @@ var schemas = map[string][]string{
 			last_error TEXT NOT NULL DEFAULT '',
 			created_at INTEGER NOT NULL DEFAULT 0
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_deletions_due ON deletions(due_at)`,
-	},
-	"mysql": {
-		"CREATE TABLE IF NOT EXISTS meta (k VARCHAR(64) PRIMARY KEY, v VARCHAR(255) NOT NULL) ENGINE=InnoDB",
-		`CREATE TABLE IF NOT EXISTS ` + "`groups`" + ` (
-			chat_id BIGINT PRIMARY KEY,
-			enabled TINYINT NOT NULL DEFAULT 1,
-			mode VARCHAR(16) NOT NULL DEFAULT 'join',
-			rules_message_id BIGINT NOT NULL DEFAULT 0,
-			rules_link VARCHAR(255) NOT NULL DEFAULT '',
-			welcome MEDIUMTEXT NOT NULL,
-			tag VARCHAR(255) NOT NULL DEFAULT '',
-			ad_words TEXT NOT NULL,
-			revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
-			updated_at BIGINT NOT NULL DEFAULT 0
-		) ENGINE=InnoDB`,
-		`CREATE TABLE IF NOT EXISTS sessions (
-			id VARCHAR(32) PRIMARY KEY,
-			chat_id BIGINT NOT NULL,
-			user_id BIGINT NOT NULL,
-			update_id BIGINT NOT NULL DEFAULT 0,
-			mode VARCHAR(16) NOT NULL,
-			state VARCHAR(16) NOT NULL,
-			display_name VARCHAR(128) NOT NULL DEFAULT '',
-			options_json MEDIUMTEXT NOT NULL,
-			correct_hash VARBINARY(32) NOT NULL,
-			dataset_revision VARCHAR(64) NOT NULL DEFAULT '',
-			challenge_chat_id BIGINT NOT NULL DEFAULT 0,
-			challenge_message_id BIGINT NOT NULL DEFAULT 0,
-			admin_chat_id BIGINT NOT NULL DEFAULT 0,
-			admin_message_id BIGINT NOT NULL DEFAULT 0,
-			join_chat_id BIGINT NOT NULL DEFAULT 0,
-			join_message_id BIGINT NOT NULL DEFAULT 0,
-			request_user_chat_id BIGINT NOT NULL DEFAULT 0,
-			started_at BIGINT NOT NULL DEFAULT 0,
-			expires_at BIGINT NOT NULL DEFAULT 0,
-			version BIGINT UNSIGNED NOT NULL DEFAULT 1,
-			updated_at BIGINT NOT NULL DEFAULT 0,
-			INDEX idx_sessions_key (chat_id, user_id),
-			INDEX idx_sessions_state (state, expires_at)
-		) ENGINE=InnoDB`,
-		`CREATE TABLE IF NOT EXISTS effects (
-			id VARCHAR(32) PRIMARY KEY,
-			session_id VARCHAR(32) NOT NULL,
-			kind VARCHAR(32) NOT NULL,
-			payload_json TEXT NOT NULL,
-			due_at BIGINT NOT NULL DEFAULT 0,
-			attempts INT NOT NULL DEFAULT 0,
-			last_error VARCHAR(512) NOT NULL DEFAULT '',
-			created_at BIGINT NOT NULL DEFAULT 0,
-			INDEX idx_effects_due (due_at),
-			INDEX idx_effects_session (session_id)
-		) ENGINE=InnoDB`,
-		`CREATE TABLE IF NOT EXISTS deletions (
-			id VARCHAR(48) PRIMARY KEY,
-			chat_id BIGINT NOT NULL,
-			message_id BIGINT NOT NULL,
-			due_at BIGINT NOT NULL DEFAULT 0,
-			lease_until BIGINT NOT NULL DEFAULT 0,
-			attempts INT NOT NULL DEFAULT 0,
-			last_error VARCHAR(512) NOT NULL DEFAULT '',
-			created_at BIGINT NOT NULL DEFAULT 0,
-			INDEX idx_deletions_due (due_at)
-		) ENGINE=InnoDB`,
-	},
+	`CREATE INDEX IF NOT EXISTS idx_deletions_due ON deletions(due_at)`,
 }
 
 // SQL 是共享的数据库句柄。
 type SQL struct {
-	db      *sql.DB
-	dialect string
+	db *sql.DB
 }
 
-// Open 按配置打开数据库并（可选）自动建表。
+// Open 打开数据库并（可选）自动建表。
 func Open(ctx context.Context, cfg *config.Config, backend string) (*SQL, error) {
 	switch strings.ToLower(backend) {
 	case "sqlite":
 		return openSQLite(ctx, cfg)
-	case "mysql":
-		return openMySQL(ctx, cfg)
 	default:
-		return nil, fmt.Errorf("不支持的 SQL 后端 %q", backend)
+		return nil, fmt.Errorf("不支持的 SQL 后端 %q（只支持 sqlite）", backend)
 	}
 }
 
@@ -208,52 +138,7 @@ func openSQLite(ctx context.Context, cfg *config.Config) (*SQL, error) {
 	db.SetMaxOpenConns(maxOpen)
 	db.SetMaxIdleConns(maxOpen)
 	db.SetConnMaxLifetime(0)
-	h := &SQL{db: db, dialect: "sqlite"}
-	if err := h.ping(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if cfg.Storage.AutoMigrate {
-		if err := h.Migrate(ctx); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
-	}
-	return h, nil
-}
-
-func openMySQL(ctx context.Context, cfg *config.Config) (*SQL, error) {
-	m := cfg.Storage.MySQL
-	if strings.TrimSpace(m.DSN) == "" {
-		return nil, errors.New("storage.mysql.dsn 为空")
-	}
-	// 统一 UTC：deadline 在库里是 Unix 秒，Go 层只做展示时转换。
-	dsn := m.DSN
-	if !strings.Contains(dsn, "parseTime=") {
-		sep := "?"
-		if strings.Contains(dsn, "?") {
-			sep = "&"
-		}
-		dsn += sep + "parseTime=true&loc=UTC"
-	}
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("打开 MySQL 失败: %w", err)
-	}
-	maxOpen := m.MaxOpenConnections
-	if maxOpen <= 0 {
-		maxOpen = 10
-	}
-	maxIdle := m.MaxIdleConnections
-	if maxIdle <= 0 {
-		maxIdle = 5
-	}
-	db.SetMaxOpenConns(maxOpen)
-	db.SetMaxIdleConns(maxIdle)
-	if m.ConnectionMaxLifetimeSeconds > 0 {
-		db.SetConnMaxLifetime(time.Duration(m.ConnectionMaxLifetimeSeconds) * time.Second)
-	}
-	h := &SQL{db: db, dialect: "mysql"}
+	h := &SQL{db: db}
 	if err := h.ping(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -270,13 +155,9 @@ func openMySQL(ctx context.Context, cfg *config.Config) (*SQL, error) {
 // ensureColumns 给已存在的老库补列（CREATE TABLE IF NOT EXISTS 不会修改已有表）。
 // 列已存在时报 "duplicate column" 直接忽略，因此可以重复执行。
 func (s *SQL) ensureColumns(ctx context.Context) error {
-	str := "TEXT"
-	if s.dialect == "mysql" {
-		str = "VARCHAR(255)"
-	}
 	alters := []struct{ stmt, what string }{
-		{"ALTER TABLE sessions ADD COLUMN display_name " + str + " NOT NULL DEFAULT ''", "sessions.display_name"},
-		{"ALTER TABLE groups ADD COLUMN rules_link " + str + " NOT NULL DEFAULT ''", "groups.rules_link"},
+		{"ALTER TABLE sessions ADD COLUMN display_name TEXT NOT NULL DEFAULT ''", "sessions.display_name"},
+		{"ALTER TABLE groups ADD COLUMN rules_link TEXT NOT NULL DEFAULT ''", "groups.rules_link"},
 	}
 	for _, a := range alters {
 		if _, err := s.db.ExecContext(ctx, a.stmt); err != nil && !isDuplicateColumnErr(err) {
@@ -286,13 +167,12 @@ func (s *SQL) ensureColumns(ctx context.Context) error {
 	return nil
 }
 
-// isDuplicateColumnErr 判断"列已存在"错误（SQLite: duplicate column name；MySQL: 1060）。
+// isDuplicateColumnErr 判断"列已存在"错误。
 func isDuplicateColumnErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "duplicate column") || strings.Contains(msg, "error 1060")
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column")
 }
 
 func (s *SQL) ping(ctx context.Context) error {
@@ -306,11 +186,7 @@ func (s *SQL) ping(ctx context.Context) error {
 
 // Migrate 建表（幂等）。
 func (s *SQL) Migrate(ctx context.Context) error {
-	stmts, ok := schemas[s.dialect]
-	if !ok {
-		return fmt.Errorf("没有 %s 的建表脚本", s.dialect)
-	}
-	for _, stmt := range stmts {
+	for _, stmt := range schemaStatements {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("建表失败 (%s): %w", firstLine(stmt), err)
 		}
@@ -826,9 +702,6 @@ func queryActiveTx(ctx context.Context, h *SQL, tx *sql.Tx, key domain.SessionKe
 	q := `SELECT ` + sessionCols + ` FROM sessions
 		WHERE chat_id = ? AND user_id = ? AND state IN (?, ?)
 		ORDER BY started_at DESC LIMIT 1`
-	if h.dialect == "mysql" {
-		q += " FOR UPDATE"
-	}
 	row := tx.QueryRowContext(ctx, h.rebind(q), key.ChatID, key.UserID,
 		string(domain.StatePreparing), string(domain.StatePending))
 	return scanSession(row.Scan)
@@ -953,9 +826,6 @@ func (q *DeletionQueue) LeaseDue(ctx context.Context, now time.Time, limit int, 
 	q2 := `SELECT id, chat_id, message_id, due_at, lease_until, attempts, last_error
 		FROM deletions WHERE due_at <= ? AND (lease_until <= ?)
 		ORDER BY due_at ASC LIMIT ?`
-	if q.h.dialect == "mysql" {
-		q2 += " FOR UPDATE SKIP LOCKED"
-	}
 	rows, err := tx.QueryContext(ctx, q.h.rebind(q2), now.Unix(), now.Unix(), limit)
 	if err != nil {
 		return nil, err

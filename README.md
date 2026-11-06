@@ -186,7 +186,7 @@ internal/ports           全部外部依赖接口（Source/ImageResolver/Store/S
 internal/challenge       抽题：同池干扰项、按答案而非按图等概率、随机 token、题库不足策略
 internal/provider        jsonfile / directory / sql / http 四种题库来源
 internal/image           取图 + 限流限尺寸 + 重编码（抹掉 EXIF/文件名）+ 磁盘缓存 + SSRF 防护
-internal/store           群配置（SQLite/MySQL/YAML）+ 会话注册表（原子 Claim）+ 延时删除队列（lease/ack/nack）
+internal/store           群配置（SQLite/YAML）+ 会话注册表（原子 Claim）+ 延时删除队列（lease/ack/nack）
 internal/dispatch        按 key 严格 FIFO、按 lane 限并发的分派器（关键通道有界背压不丢事件）
 internal/gatekeeper      用例层：入群/申请/回调/未验证发言/超时扫描 + 副作用 outbox 执行器
 internal/telegram        telegram-bot-api v1.1.1 适配器 + MarkdownV2 转义 + callback_data 编解码
@@ -198,7 +198,7 @@ internal/dataset         题库导入（MediaWiki / 任意 JSON）与图片下�
 ```
 
 依赖方向：`router/telegram → gatekeeper → domain + ports`，其余都是 ports 的实现。
-运行时只需要一个本地 SQLite 文件（纯 Go 驱动，`CGO_ENABLED=0` 出单二进制），无需 MySQL/Redis。
+运行时只需要一个本地 SQLite 文件（纯 Go 驱动，`CGO_ENABLED=0` 出单二进制），不需要任何外部数据库。
 
 ## 🔒 安全与并发设计
 
@@ -260,7 +260,7 @@ go test ./internal/store/... -run TestClaimOnlyOneWinnerConcurrent -v   # 并发
 - [IJNKAWAKAZE/arknights_bot](https://github.com/IJNKAWAKAZE/arknights_bot)（GPL-3.0）——入群验证与群管理的主要参考。
 - [IJNKAWAKAZE/endfield_bot](https://github.com/IJNKAWAKAZE/endfield_bot)（GPL-3.0）——同源实现，一并参考。
 - [ijnkawakaze/telegram-bot-api](https://github.com/ijnkawakaze/telegram-bot-api)（v1.1.1）——Telegram 客户端库。
-- [modernc.org/sqlite](https://gitlab.com/cznic/sqlite)、[go-sql-driver/mysql](https://github.com/go-sql-driver/mysql)、
+- [modernc.org/sqlite](https://gitlab.com/cznic/sqlite)、
   [golang.org/x/text](https://pkg.go.dev/golang.org/x/text)、[golang.org/x/image](https://pkg.go.dev/golang.org/x/image)、
   [gopkg.in/yaml.v3](https://pkg.go.dev/gopkg.in/yaml.v3)。
 

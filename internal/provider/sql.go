@@ -14,7 +14,6 @@ import (
 	"github.com/LenKiMo/tg-gatekeeper/internal/ports"
 
 	// 驱动注册：SQLite 用纯 Go 实现（CGO_ENABLED=0 也能出单二进制）。
-	_ "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
 )
 
@@ -39,7 +38,7 @@ func newSQL(name string, def config.ProviderDef) (ports.Source, error) {
 	case "sqlite", "sqlite3", "":
 		driver = "sqlite"
 	case "mysql", "mariadb":
-		driver = "mysql"
+		return nil, fmt.Errorf("provider %s 的 sql.driver=%q 已移除（本版本只支持 sqlite，见 docs/mysql-backend-assessment.md）", name, d.Driver)
 	default:
 		return nil, fmt.Errorf("provider %s 的 sql.driver 不支持 %q", name, d.Driver)
 	}

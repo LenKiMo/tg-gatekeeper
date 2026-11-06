@@ -281,12 +281,11 @@ type ImageCache struct {
 
 // Storage 是持久化配置。
 type Storage struct {
-	GroupStore      string      `yaml:"group_store"`      // sqlite | mysql | yaml
-	SessionRegistry string      `yaml:"session_registry"` // sqlite | mysql | memory
-	DeletionQueue   string      `yaml:"deletion_queue"`   // sqlite | mysql | memory
+	GroupStore      string      `yaml:"group_store"`      // sqlite | yaml
+	SessionRegistry string      `yaml:"session_registry"` // sqlite | memory
+	DeletionQueue   string      `yaml:"deletion_queue"`   // sqlite | memory
 	AutoMigrate     bool        `yaml:"auto_migrate"`
 	SQLite          SQLiteStore `yaml:"sqlite"`
-	MySQL           MySQLStore  `yaml:"mysql"`
 	YAML            YAMLStore   `yaml:"yaml"`
 }
 
@@ -296,14 +295,6 @@ type SQLiteStore struct {
 	WAL                bool   `yaml:"wal"`
 	BusyTimeoutMS      int    `yaml:"busy_timeout_ms"`
 	MaxOpenConnections int    `yaml:"max_open_connections"`
-}
-
-// MySQLStore 是 MySQL 参数。
-type MySQLStore struct {
-	DSN                          string `yaml:"dsn"`
-	MaxOpenConnections           int    `yaml:"max_open_connections"`
-	MaxIdleConnections           int    `yaml:"max_idle_connections"`
-	ConnectionMaxLifetimeSeconds int    `yaml:"connection_max_lifetime_seconds"`
 }
 
 // YAMLStore 是 YAML 群配置存储参数。
@@ -474,11 +465,6 @@ func Default() *Config {
 				BusyTimeoutMS:      5000,
 				MaxOpenConnections: 1,
 			},
-			MySQL: MySQLStore{
-				MaxOpenConnections:           10,
-				MaxIdleConnections:           5,
-				ConnectionMaxLifetimeSeconds: 1800,
-			},
 			YAML: YAMLStore{Path: "./data/groups.yaml", RuntimeWrites: true, FileMode: "0600"},
 		},
 		Session: Session{
@@ -614,9 +600,6 @@ func applyAirbag(cfg *Config) {
 	if cfg.Bot.Token == "" {
 		cfg.Bot.Token = os.Getenv("TG_BOT_TOKEN")
 	}
-	if cfg.Storage.MySQL.DSN == "" {
-		cfg.Storage.MySQL.DSN = os.Getenv("MYSQL_DSN")
-	}
 }
 
 // Validate 做跨字段校验。任何"本版本不支持"的后端都会在此明确报错，
@@ -745,26 +728,23 @@ func (c *Config) Validate() error {
 
 	groupBackend := strings.ToLower(c.Storage.GroupStore)
 	switch groupBackend {
-	case "sqlite", "mysql", "yaml":
-	case "redis", "file":
-		return fmt.Errorf("storage.group_store=%q 本版本未实现，请使用 sqlite/mysql/yaml", c.Storage.GroupStore)
+	case "sqlite", "yaml":
+	case "redis", "file", "mysql":
+		return fmt.Errorf("storage.group_store=%q 本版本未实现，请使用 sqlite/yaml", c.Storage.GroupStore)
 	default:
-		return fmt.Errorf("storage.group_store 只能是 sqlite/mysql/yaml，当前 %q", c.Storage.GroupStore)
+		return fmt.Errorf("storage.group_store 只能是 sqlite/yaml，当前 %q", c.Storage.GroupStore)
 	}
 	for name, backend := range map[string]string{
 		"storage.session_registry": c.Storage.SessionRegistry,
 		"storage.deletion_queue":   c.Storage.DeletionQueue,
 	} {
 		switch strings.ToLower(backend) {
-		case "sqlite", "mysql", "memory":
-		case "redis", "file":
-			return fmt.Errorf("%s=%q 本版本未实现，请使用 sqlite/mysql（memory 仅用于测试）", name, backend)
+		case "sqlite", "memory":
+		case "redis", "file", "mysql":
+			return fmt.Errorf("%s=%q 本版本未实现，请使用 sqlite（memory 仅用于测试）", name, backend)
 		default:
-			return fmt.Errorf("%s 只能是 sqlite/mysql/memory，当前 %q", name, backend)
+			return fmt.Errorf("%s 只能是 sqlite/memory，当前 %q", name, backend)
 		}
-	}
-	if groupBackend == "mysql" && strings.TrimSpace(c.Storage.MySQL.DSN) == "" {
-		return errors.New("storage.mysql.dsn 不能为空（也可用 ${MYSQL_DSN}）")
 	}
 	if groupBackend == "yaml" && strings.TrimSpace(c.Storage.YAML.Path) == "" {
 		return errors.New("storage.yaml.path 不能为空")

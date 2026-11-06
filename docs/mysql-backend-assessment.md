@@ -63,3 +63,19 @@ SQL 语法错误，排查成本落在对方身上。
 2. 若删除：`storage.*` 的合法值收窄是否接受"老配置直接报错"的破坏性变更（建议接受，并写进
    CHANGELOG 的"行为反转"段）。
 3. 若保留：CI 是否愿意承担 MySQL service container 的运行时间。
+
+## 5. 决策（已执行）
+
+维护者确认"目前只有一台实例、跑在 SQLite 上"（上述第 1 点），选择方案 A：**移除 MySQL 后端**。
+代码见提交 `refactor(store): 移除 MySQL 后端，只保留 SQLite`：
+
+- `internal/store/sqlstore.go`：只保留一份建表脚本与 `sqlite` 分支，删掉 `openMySQL`、
+  `dialect` 字段、`FOR UPDATE` / `SKIP LOCKED` 分支；
+- `internal/store/factory.go`：`group_store` 收窄为 `sqlite|yaml`，
+  `session_registry` / `deletion_queue` 收窄为 `sqlite|memory`；
+- `internal/config/config.go`：删掉 `Storage.MySQL` 与 `MYSQL_DSN` 兜底，配置校验明确拒绝 `mysql`；
+- `internal/provider/sql.go`：题库 SQL 源同步只支持 `sqlite`（`driver: mysql` 直接报错）；
+- 依赖：`go.mod` 去掉 `go-sql-driver/mysql` 与未使用的 `gorm.io/driver/mysql`（go.sum 少 89 行）。
+
+影响：任何 `storage.*=mysql` 或 `provider.*.sql.driver=mysql` 的老配置会在启动自检阶段
+明确报错，不会静默退化。
