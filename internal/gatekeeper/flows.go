@@ -117,11 +117,17 @@ func (s *Service) verifyNewMember(ctx context.Context, group domain.GroupConfig,
 
 	// bot 农场特征链：两词英文名 **且** 无 username **且** 无简介 **且** 无头像。
 	// 三个"无"缺一不可——"Jack Smith" 也可能是真人，只有资料全空才是有意义的信号。
+	//
+	// auditedBot 记录这条入群已经写过一条 english_name_bot 快照：audit 模式下命中了
+	// 也照常出题，但那时不该再补一条 verify——同一次入群两条 decision 互相矛盾，
+	// 事后统计"命中 bot 农场特征的有多少人最终答题通过"会被这批重复行污染。
+	auditedBot := false
 	if policy := s.englishNamePolicy(); policy != "off" && profErr == nil &&
 		filter.IsPlainEnglishName(m.DisplayName) &&
 		prof.Bio == "" && prof.Username == "" && !prof.HasPhoto {
 		s.noteProfile(ctx, group, m.UserID, m.DisplayName, prof,
 			profileDecisionEnglishName, "english_name", "")
+		auditedBot = true
 		s.audit(ctx, ports.AuditEvent{
 			Event: "verify.bot_profile", ChatID: group.ChatID, UserID: m.UserID,
 			Result: policy, Mode: string(group.Mode), DisplayName: m.DisplayName,
@@ -137,7 +143,9 @@ func (s *Service) verifyNewMember(ctx context.Context, group domain.GroupConfig,
 	if err != nil {
 		return err
 	}
-	s.noteProfile(ctx, group, m.UserID, m.DisplayName, prof, profileDecisionVerify, "", "")
+	if !auditedBot {
+		s.noteProfile(ctx, group, m.UserID, m.DisplayName, prof, profileDecisionVerify, "", "")
+	}
 	if sess.ID != "" {
 		s.audit(ctx, ports.AuditEvent{
 			Event: "verify.started", ChatID: group.ChatID, UserID: m.UserID,

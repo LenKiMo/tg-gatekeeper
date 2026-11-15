@@ -266,6 +266,32 @@ func TestProfileNotCollectedWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestAuditBotProfileWritesExactlyOneSnapshot audit 模式下命中 bot 农场特征链后仍然出题，
+// 但同一次入群只能写一条快照——否则 "命中后被出题" 的号会同时有 english_name_bot 与
+// verify 两条记录，事后统计"命中者里有多少最终答题通过"就被污染了。
+func TestAuditBotProfileWritesExactlyOneSnapshot(t *testing.T) {
+	ps := withProfileStore(t)
+	svc, api, _, _ := testService(t, func(cfg *config.Config) {
+		cfg.Gatekeeper.EnglishNamePolicy = "audit"
+		cfg.Privacy.CollectProfiles = true
+		cfg.Privacy.HMACKey = "test-key"
+	})
+	api.profiles = map[int64]ports.UserProfile{7: {}}
+	if err := svc.OnMembersJoined(context.Background(), -100, 1,
+		[]Member{{UserID: 7, DisplayName: "Eileen Carn"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.challenges) != 1 {
+		t.Fatalf("audit 模式应照常出题，实际 %d 道", len(api.challenges))
+	}
+	if len(ps.saved) != 1 {
+		t.Fatalf("同一次入群应只写 1 条快照，实际 %d 条: %+v", len(ps.saved), ps.saved)
+	}
+	if d := ps.saved[0].Decision; d != profileDecisionEnglishName {
+		t.Fatalf("decision 应为 %s，实际 %s", profileDecisionEnglishName, d)
+	}
+}
+
 // TestNameShape 形态分类。
 func TestNameShape(t *testing.T) {
 	cases := map[string]string{

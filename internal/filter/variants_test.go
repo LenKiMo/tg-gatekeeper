@@ -189,6 +189,9 @@ func TestBioWordsRejectFromRealBios(t *testing.T) {
 		"律师函 催收函 长期招实力快递车队价格高 结账效率。",
 		"https://t.me/+VUo9tejy8MY5ZWM1 进群了解一小时8000",
 		"手头紧，缺钱的兄弟🌈来，内部项目，一天5万随便拿 https://t.me/+wxEkn1m7D_w4YTQ0",
+		// 这条来自一个**已经通过答题**留在群里的号（昵称 "Hope Chalie"）：
+		// 有头像、无 username，昵称层与 bot 农场规则都不会碰它，只有 bio 能拦住。
+		"暴力风口项目WS话术单进频道 @NTOIOT",
 	}
 	for _, b := range spam {
 		if w, hit := f.CheckBio(b, nil); !hit {
