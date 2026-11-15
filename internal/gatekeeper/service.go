@@ -38,6 +38,10 @@ type Service struct {
 	provider ports.Source
 	log      *slog.Logger
 
+	// profiles 保存脱敏的入群资料快照（可为 nil：未启用采集时不构造）。
+	profiles   ports.ProfileStore
+	privacyKey []byte
+
 	gen atomic.Pointer[challenge.Generator]
 
 	refreshOnce sync.Once
@@ -58,6 +62,8 @@ type Deps struct {
 	Images   ports.ImageResolver
 	Provider ports.Source
 	Logger   *slog.Logger
+	// Profiles 可为 nil：为 nil 或 privacy.collect_profiles=false 时不写脱敏快照。
+	Profiles ports.ProfileStore
 }
 
 // New 构造 Service。
@@ -86,8 +92,22 @@ func New(d Deps) (*Service, error) {
 		adFilter:  filter.New(d.Config.AdFilter),
 		provider:  d.Provider,
 		log:       log,
+		profiles:  d.Profiles,
 		stopCh:    make(chan struct{}),
 		startedAt: time.Now(),
+	}
+	// 脱敏快照的 HMAC 密钥：为空时退化为固定盐，并明确告警——那种情况下 ref 在
+	// 任何用同一份代码的部署里都能被复算出来，关联性只剩"同一个人"这一层。
+	if key := strings.TrimSpace(d.Config.Privacy.HMACKey); key != "" {
+		s.privacyKey = []byte(key)
+	} else {
+		s.privacyKey = []byte("tg-gatekeeper/default-profile-ref-key")
+		if d.Config.Privacy.CollectProfiles {
+			log.Warn("privacy.hmac_key_env 为空，资料快照使用固定盐；建议配置环境变量后再采集")
+		}
+	}
+	if s.cfg.AdFilter.Enabled {
+		log.Info("广告词过滤已启用", "words", s.adFilter.Words(), "homophones", s.adFilter.Homophones())
 	}
 	return s, nil
 }
@@ -97,10 +117,11 @@ func (s *Service) Start(ctx context.Context) error {
 	if err := s.RefreshDataset(ctx); err != nil {
 		return err
 	}
-	s.wg.Add(3)
+	s.wg.Add(4)
 	go s.refreshLoop()
-	go s.effectLoop()   // 超时扫描 + 副作用 outbox
-	go s.deletionLoop() // 延时删除
+	go s.effectLoop()           // 超时扫描 + 副作用 outbox
+	go s.deletionLoop()         // 延时删除
+	go s.profileRetentionLoop() // 脱敏快照保留期清理
 	return nil
 }
 

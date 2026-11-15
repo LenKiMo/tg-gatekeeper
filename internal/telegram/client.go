@@ -311,11 +311,27 @@ func (c *Client) AnswerCallback(_ context.Context, callbackID, text string, aler
 
 // GetBio 取用户简介（普通入群模式的广告词检查用）。
 func (c *Client) GetBio(_ context.Context, userID int64) (string, error) {
+	p, err := c.GetUserProfile(context.Background(), userID)
+	if err != nil {
+		return "", err
+	}
+	return p.Bio, nil
+}
+
+// GetUserProfile 一次 getChat 读出简介、用户名与是否设置头像。
+//
+// 头像判定用 Photo != nil：getChat 对"没设头像"的用户会省略整个 photo 字段，
+// 而不是返回空对象，所以判空指针就够，不需要再看具体尺寸。
+func (c *Client) GetUserProfile(_ context.Context, userID int64) (ports.UserProfile, error) {
 	info, err := c.api.GetChatInfo(userID)
 	if err != nil {
-		return "", wrap("读取用户资料", err)
+		return ports.UserProfile{}, wrap("读取用户资料", err)
 	}
-	return strings.TrimSpace(info.Bio), nil
+	return ports.UserProfile{
+		Bio:      strings.TrimSpace(info.Bio),
+		Username: strings.TrimSpace(info.UserName),
+		HasPhoto: info.Photo != nil,
+	}, nil
 }
 
 // IsAdminWithPermissions 判断是否管理员/创建者。

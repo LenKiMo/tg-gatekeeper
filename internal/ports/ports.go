@@ -204,6 +204,54 @@ type Audit interface {
 	Close() error
 }
 
+// ---------------------------------------------------------------- 入群资料（分析用）
+
+// UserProfile 是一次 getChat 读到的用户公开资料。
+//
+// 单独抽出来是为了**一次 API 调用**同时拿到简介、用户名与是否设置头像：入群预检
+// 本来就要读简介（广告词），英文名规则还要判 username/头像，分开调就是把同一个
+// 接口打三遍。
+type UserProfile struct {
+	Bio string
+	// Username 不含 @；为空表示该用户没设公开用户名。
+	Username string
+	HasPhoto bool
+}
+
+// ProfileSnapshot 是一条**脱敏**的入群资料快照，只用于离线分析与规则提炼。
+//
+// Ref 是 HMAC-SHA256(key, user_id) 的十六进制前缀：同一用户在库里可关联（能算"这个人
+// 反复来过"），但拿不到 user_id，也无法从 user_id 反算。真正的处置动作（封禁/解封/
+// 申诉）走 audit.jsonl，那条线保留明文 user_id。
+type ProfileSnapshot struct {
+	Ref         string
+	ChatID      int64
+	DisplayName string
+	Bio         string
+	HasUsername bool
+	HasPhoto    bool
+	// NameShape 是粗分类：ascii_name / cjk / cjk_emoji / emoji_only / empty / other。
+	NameShape string
+	// Decision 是这次的判定：ad_display_name / ad_bio / english_name_bot / verify / skip。
+	Decision string
+	// Rule 是命中的规则来源（词条原文、homophone:主椰→主页、english_name）。
+	Rule string
+	// Word 是命中的词（若有）。
+	Word      string
+	CreatedAt int64
+	ExpiresAt int64
+}
+
+// ProfileStore 保存脱敏的入群资料快照。
+//
+// 与 Store（群配置）分开：资料的写入方是入群热路径，读写模式与群配置完全不同，
+// 混在一个接口里会让所有假实现都被迫实现一堆用不到的方法。
+type ProfileStore interface {
+	SaveProfile(ctx context.Context, p ProfileSnapshot) error
+	// PurgeProfilesBefore 删除 CreatedAt < cutoff 的记录，返回删除条数。
+	PurgeProfilesBefore(ctx context.Context, cutoff int64) (int64, error)
+}
+
 // ---------------------------------------------------------------- Telegram
 
 // Button 是一个内联按钮。Data 是回调数据；URL 非空时是链接按钮（二者只用一个）。
@@ -236,8 +284,10 @@ type Telegram interface {
 		buttons ButtonGrid) (domain.MessageRef, error)
 	DeleteMessage(ctx context.Context, ref domain.MessageRef) error
 	AnswerCallback(ctx context.Context, callbackID, text string, alert bool) error
-	// GetBio 取用户简介（普通入群模式下用于广告词检查）。
+	// GetBio 取用户简介（普通入群模式的广告词检查用）。
 	GetBio(ctx context.Context, userID int64) (string, error)
+	// GetUserProfile 一次读出简介 + 用户名 + 是否设置头像（入群预检用）。
+	GetUserProfile(ctx context.Context, userID int64) (UserProfile, error)
 	IsAdminWithPermissions(ctx context.Context, chatID, userID int64, permission uint16) (bool, error)
 	// GetMemberStatus 返回 creator/administrator/member/restricted/left/kicked/unknown。
 	GetMemberStatus(ctx context.Context, chatID, userID int64) (string, error)

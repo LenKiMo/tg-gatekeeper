@@ -51,7 +51,37 @@ commands:
 
 ad_filter:
   enabled: true
-  global_words: []                 # 例如 ["代肝", "代充", "点击链接"]
+  # 注意：这两个列表是**完整替换**语义，不是追加——写了就一定把内置词表顶掉。
+  # 想在内置词表基础上加词，把内置的也抄过来（内置词表见 internal/config 的 Default()）。
+  # 不写这一行（或整段注释掉）则使用内置词表。
+  # global_words: []
+  # 只在简介上生效的追加词。简介比昵称可写更长、话术更露骨：日挣/USDT/搬砖/跑分
+  # 这类词放在昵称里可能是玩笑，放在简介里基本只出现在诈骗话术上。
+  # bio_words: []
+  # 简介里出现 t.me/+ 私密邀请链接即判广告。公开频道是 t.me/<name>（没有加号），
+  # 私密邀请才是 +<hash>——实测生产里的引流号全部用后者。默认关，确认群里没人
+  # 在简介放私密链接后再开。
+  bio_join_link_reject: false
+  # 去掉 emoji/标点后才会匹配的词。只解决"词中间被插入字符"（"博😀彩"），代价是
+  # 容易误伤（"快😘乐营💙业😻中" 的骨架是"快乐营业中"，"营业"是正常短语）。
+  # 因此它是一张**独立、默认空**的表，不是给 global_words 开一个宽松模式。
+  skeleton_words: []
+  # 谐音/拆字还原：先把 from 换成 to，再拿还原后的文本匹配词表。落在这里的都是
+  # 生产审计日志里实测出现的写法（"看我主椰""山水看沃竹页""看莪曰 挣.5k"）。
+  # 缺省值已内置下面这些；配了就从这里取，不再叠加默认值。
+  homophones:
+    - { from: "主椰", to: "主页" }
+    - { from: "竹页", to: "主页" }
+    - { from: "竹叶", to: "主页" }
+    - { from: "主叶", to: "主页" }
+    - { from: "沃竹页", to: "我主页" }
+    - { from: "莪", to: "我" }
+    - { from: "沃", to: "我" }
+    - { from: "曰", to: "日" }
+    - { from: "带盈", to: "带赢" }
+    - { from: "薇", to: "微" }
+    - { from: "扣扣", to: "QQ" }
+    - { from: "企鹅", to: "QQ" }
   include_group_words: true
   normalize_nfkc: true
   ignore_case: true
@@ -62,6 +92,22 @@ ad_filter:
   negation_words: ["请勿", "切勿", "勿", "别", "不要", "禁止", "谢绝", "拒绝", "未经"]
   bio_lookup_error_policy: audit_continue   # audit_continue | deny
   match_mode: contains
+
+# 入群资料的留存边界。两条线刻意不对称：
+#   - 处置记录（audit.jsonl 的 verify.ad_rejected / admin_ban 等）**不脱敏**，保留明文
+#     user_id：封禁、申诉、解封都要能定位到人，脱敏会让操作记录失去意义。
+#   - 分析语料（SQLite 的 profile_snapshots 表）**脱敏**：表里没有 user_id 列，
+#     只有 HMAC(key, user_id) 的前 16 字节，同一用户可关联但拿不到身份。
+# 聊天正文本来就不落库（消息级拦截只记命中词与按钮链接），因此没有"聊天记录保留期"。
+privacy:
+  # 是否把入群时读到的昵称/简介以脱敏形式落库（用于离线提炼谐音与词条）。
+  collect_profiles: true
+  # 保留天数，到期由进程每小时清理一次。0 = 不清理（不建议）。
+  retention_days: 90
+  # user_id → ref 的 HMAC 密钥。建议指向环境变量（写成 ${TG_GATEKEEPER_REF_KEY} 这类
+  # 占位，由启动时的 EnvironmentFile 提供）而不是写明文。留空时退化为固定盐并在启动
+  # 日志告警——固定盐意味着换部署也能量出同样的 ref，关联性还在。
+  hmac_key_env: ""
 
 # 消息级拦截：成员在群里**借机器人投放广告**时的自动处置。两类必须分开：
 #   - 访客机器人（guest bots，Bot API 10.0）：用户 @ 一个**不是群成员**的机器人，
@@ -94,6 +140,12 @@ gatekeeper:
   # 管理员在卡片上点"🚫 封禁"的封禁时长（秒），默认 7 天；0 = 永久。
   admin_ban_seconds: 604800
   block_pending_messages: true     # 待验证用户发言即按违规处置
+  # 「纯英文名 + 无 username + 无简介 + 无头像」这条 bot 农场特征链怎么处理：
+  #   off（不管）| audit（只写审计，照常出题）| kick（不出题，静默踢出）
+  # 实测：1841 条入群记录里 76% 是两词英文名，其中 92% 从不答题。名字本身没有广告
+  # 信号，所以判据必须是"名字形状 + 三项资料同时为空"。默认 off——这是会直接踢人的
+  # 规则，先跑 audit 看一天命中量再开 kick。
+  english_name_policy: off
   failure_policy: deny             # deny（拒之门外）| allow（放行，安全性下降）
   # failure_policy=deny 时，因机器人自身故障（题目发不出去 / 出不了题）把新人请出去的
   # 封禁时长（秒），不能小于 60。到期后 Telegram 自动解封，但人已经不在群里了，需要

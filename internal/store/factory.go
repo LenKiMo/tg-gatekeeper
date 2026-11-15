@@ -14,6 +14,8 @@ type Set struct {
 	Groups   ports.Store
 	Registry ports.SessionRegistry
 	Deletion ports.DeletionQueue
+	// Profiles 保存脱敏的入群资料快照；SQL 不可用时为 nil（此时不采集）。
+	Profiles ports.ProfileStore
 	// Closers 按逆序关闭。
 	Closers []func() error
 	// SQL 为 nil 表示用的是内存实现。
@@ -47,6 +49,7 @@ func New(ctx context.Context, cfg *config.Config) (*Set, error) {
 		}
 		sqlHandle = h
 		set.SQL = h
+		set.Profiles = h
 		set.Closers = append(set.Closers, h.Close)
 	}
 

@@ -85,6 +85,25 @@ var schemaStatements = []string{
 			created_at INTEGER NOT NULL DEFAULT 0
 		)`,
 	`CREATE INDEX IF NOT EXISTS idx_deletions_due ON deletions(due_at)`,
+	// profile_snapshots 是**脱敏**的入群资料（分析用）：ref 是 HMAC(user_id) 前缀，
+	// 没有原始 user_id 列——库被拿走也反查不到人。处置记录在 audit.jsonl，那边保留明文。
+	`CREATE TABLE IF NOT EXISTS profile_snapshots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ref TEXT NOT NULL,
+			chat_id INTEGER NOT NULL DEFAULT 0,
+			display_name TEXT NOT NULL DEFAULT '',
+			bio TEXT NOT NULL DEFAULT '',
+			has_username INTEGER NOT NULL DEFAULT 0,
+			has_photo INTEGER NOT NULL DEFAULT 0,
+			name_shape TEXT NOT NULL DEFAULT '',
+			decision TEXT NOT NULL DEFAULT '',
+			rule TEXT NOT NULL DEFAULT '',
+			word TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL DEFAULT 0,
+			expires_at INTEGER NOT NULL DEFAULT 0
+		)`,
+	`CREATE INDEX IF NOT EXISTS idx_profiles_ref ON profile_snapshots(ref)`,
+	`CREATE INDEX IF NOT EXISTS idx_profiles_created ON profile_snapshots(created_at)`,
 }
 
 // SQL 是共享的数据库句柄。

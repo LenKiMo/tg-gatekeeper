@@ -38,6 +38,25 @@ type Config struct {
 	DeletionWorker DeletionWorker `yaml:"deletion_worker"`
 	Dispatcher     Dispatcher     `yaml:"dispatcher"`
 	Audit          Audit          `yaml:"audit"`
+	Privacy        Privacy        `yaml:"privacy"`
+}
+
+// Privacy 控制"入群资料留存"的边界。
+//
+// 分两条线，刻意不对称：
+//   - **处置记录不脱敏**（audit.jsonl 的 verify.ad_rejected / admin_ban 等）：封禁、
+//     申诉、解封都要能定位到具体 user_id，脱敏会让操作记录失去意义。
+//   - **分析语料脱敏**（profile_snapshots 表）：昵称/简介只用于提炼规则与统计，与
+//     user_id 之间的关系用 HMAC 单向映射，库被拿走也无法反查到人。
+type Privacy struct {
+	// CollectProfiles 为 true 时，把入群时读到的昵称/简介以脱敏形式落库供离线分析。
+	CollectProfiles bool `yaml:"collect_profiles"`
+	// RetentionDays 是脱敏资料的保留天数（到期由进程内定时清理删除），默认 90。
+	// 0 表示不自动清理（不建议：分析语料没有保留价值时就该删掉）。
+	RetentionDays int `yaml:"retention_days"`
+	// HMACKey 是给 user_id 做单向映射的密钥。为空时退化为 SHA-256(user_id) 并在启动
+	// 日志里告警——那种情况下同一个 user_id 在别的部署里能算出同样的 ref，关联性仍在。
+	HMACKey string `yaml:"hmac_key_env"` // 支持 ${ENV_NAME} 展开，不建议明文写在配置里
 }
 
 // Bot 是 Telegram 侧配置。
@@ -90,19 +109,36 @@ type Commands struct {
 	TagMaxRunes                int  `yaml:"tag_max_runes"`
 }
 
+// Homophone 是一条谐音/拆字还原规则：先把 From 换成 To，再拿还原后的文本匹配词表。
+//
+// 为什么要单独一层：广告号把"主页"写成"主椰/竹页"、把"我"写成"莪/沃"，子串匹配
+// 完全失效，而把这些变体全部塞进词表会让词表线性膨胀。优先用还原规则（改一处，
+// 所有相关词都受益），只有还原后仍表达不出完整短语的情况才加变体词。
+// 只放实测确认过的改写（如"看我主椰""山水看沃竹页"），不要凭想象造谐音。
+type Homophone struct {
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
+}
+
 // AdFilter 是广告词过滤配置。
 type AdFilter struct {
-	Enabled              bool     `yaml:"enabled"`
-	GlobalWords          []string `yaml:"global_words"`
-	IncludeGroupWords    bool     `yaml:"include_group_words"`
-	NormalizeNFKC        bool     `yaml:"normalize_nfkc"`
-	IgnoreCase           bool     `yaml:"ignore_case"`
-	RemoveWhitespace     bool     `yaml:"remove_whitespace"`
-	RemoveZeroWidth      bool     `yaml:"remove_zero_width"`
-	RemovableSeparators  []string `yaml:"removable_separators"`
-	NegationWords        []string `yaml:"negation_words"`          // 紧邻命中词前的否定标记（免责声明豁免）
-	BioLookupErrorPolicy string   `yaml:"bio_lookup_error_policy"` // audit_continue | deny
-	MatchMode            string   `yaml:"match_mode"`              // contains
+	Enabled     bool     `yaml:"enabled"`
+	GlobalWords []string `yaml:"global_words"`
+	BioWords    []string `yaml:"bio_words"` // 只在简介上生效的追加词
+	// BioJoinLinkReject 为 true 时，简介里出现 t.me/+ 私密邀请链接即判广告。
+	// 只作用于简介层：公开频道链接是 t.me/<name>（无加号），私密邀请才是 +<hash>。
+	BioJoinLinkReject    bool        `yaml:"bio_join_link_reject"`
+	SkeletonWords        []string    `yaml:"skeleton_words"` // 去掉 emoji/符号后匹配的词（默认空）
+	Homophones           []Homophone `yaml:"homophones"`     // 谐音/拆字还原规则
+	IncludeGroupWords    bool        `yaml:"include_group_words"`
+	NormalizeNFKC        bool        `yaml:"normalize_nfkc"`
+	IgnoreCase           bool        `yaml:"ignore_case"`
+	RemoveWhitespace     bool        `yaml:"remove_whitespace"`
+	RemoveZeroWidth      bool        `yaml:"remove_zero_width"`
+	RemovableSeparators  []string    `yaml:"removable_separators"`
+	NegationWords        []string    `yaml:"negation_words"`          // 紧邻命中词前的否定标记（免责声明豁免）
+	BioLookupErrorPolicy string      `yaml:"bio_lookup_error_policy"` // audit_continue | deny
+	MatchMode            string      `yaml:"match_mode"`              // contains
 }
 
 // Moderation 是群内消息级拦截配置。
@@ -173,14 +209,21 @@ type Gatekeeper struct {
 	DeleteJoinMessage bool `yaml:"delete_join_message"`
 	// BlockPendingMessages 为 true 时，待验证用户一旦在群里发言立即按违规处置
 	// （删消息 + 踢出）。这是原实现里有钩子却从未注册的反绕过能力。
-	BlockPendingMessages bool       `yaml:"block_pending_messages"`
-	AnswerWrongAlert     bool       `yaml:"answer_wrong_alert"`
-	StaleCallbackAlert   bool       `yaml:"stale_callback_alert"`
-	ButtonColumns        int        `yaml:"button_columns"`
-	CaptionJoin          string     `yaml:"caption_join"`
-	CaptionRequest       string     `yaml:"caption_request"`
-	AdminCardText        string     `yaml:"admin_card_text"`
-	Difficulty           Difficulty `yaml:"difficulty"`
+	BlockPendingMessages bool `yaml:"block_pending_messages"`
+	// EnglishNamePolicy 是「纯英文名 + 无 username + 无简介 + 无头像」这条 bot 农场
+	// 特征链的处理方式：off（不管）| audit（只记录）| kick（不出题直接踢）。
+	//
+	// 实测：1841 条入群记录里 76% 是纯英文名（两个常见英文名拼起来），其中 92% 从不
+	// 答题。名字本身没有广告信号，所以判据必须是"名字形状 + 三项资料同时为空"。
+	// 默认 off——这是会直接踢人的规则，先在 audit 下看一天的命中量再开。
+	EnglishNamePolicy  string     `yaml:"english_name_policy"`
+	AnswerWrongAlert   bool       `yaml:"answer_wrong_alert"`
+	StaleCallbackAlert bool       `yaml:"stale_callback_alert"`
+	ButtonColumns      int        `yaml:"button_columns"`
+	CaptionJoin        string     `yaml:"caption_join"`
+	CaptionRequest     string     `yaml:"caption_request"`
+	AdminCardText      string     `yaml:"admin_card_text"`
+	Difficulty         Difficulty `yaml:"difficulty"`
 }
 
 // Provider 是数据集配置。
@@ -390,6 +433,50 @@ func Default() *Config {
 			NegationWords:        []string{"请勿", "切勿", "勿", "别", "不要", "禁止", "谢绝", "拒绝", "未经"},
 			BioLookupErrorPolicy: "audit_continue",
 			MatchMode:            "contains",
+			// 谐音还原只放**实测确认过**的改写。加密不是越多越好：每条规则都会在
+			// 热路径上跑 ReplaceAll，且过宽的规则（如把"薇"还原成"微"）只在词表里
+			// 真有对应短语时才有意义。
+			Homophones: []Homophone{
+				{From: "主椰", To: "主页"},
+				{From: "竹页", To: "主页"},
+				{From: "竹叶", To: "主页"},
+				{From: "主叶", To: "主页"},
+				{From: "沃竹页", To: "我主页"},
+				{From: "莪", To: "我"},
+				{From: "沃", To: "我"},
+				{From: "曰", To: "日"},
+				{From: "带盈", To: "带赢"},
+				{From: "薇", To: "微"},
+				{From: "扣扣", To: "QQ"},
+				{From: "企鹅", To: "QQ"},
+			},
+			// 高精度黑话直接进全局词表（昵称层也要拦）：
+			//   - 催收/进群了解：黑产自我描述与 CTA 短语，游戏群昵称里没有正当用法。
+			//   - USDT/虚拟货币/黑U/高仿U/标记U/收U/出U/带单/跟单：洗钱与假币引流。
+			// 注意"跑分"（手机跑分）、"搬砖"（游戏打金）、"回血"（补血）、"上岸"（考公）
+			// 在游戏群有正当用法，必须留在 bio_words，别挪进来。
+			GlobalWords: []string{
+				// 通用 CTA / 引流短语：任何群都适用，且正常玩家不会写在昵称里。
+				"看我主页", "点我头像", "主页入口", "投稿爆料", "广告投放",
+				"全网监控", "免费观看", "卖走私", "带赢",
+				// 黑产自我描述与洗钱/假币话术。
+				"催收", "进群了解",
+				"USDT", "虚拟货币", "虚拟币", "黑U", "高仿U", "标记U", "收U", "出U",
+				"带单", "跟单",
+				// 注意：具体投放团伙名（如"云海联盟"）不进默认词表——它会过时，
+				// 属于部署侧该加的词，放在 configs/*.yaml 的 global_words 里。
+			},
+			// 简介专用：这些词出现在昵称里可能是玩笑，出现在简介里基本是诈骗话术。
+			BioWords: []string{
+				"日挣", "日赚", "日入", "搬砖", "跑分", "洗白", "导师带",
+				"回血", "上岸", "包赔",
+				"招团队", "招商加盟", "代理盘", "兼职刷单", "在家躺赚",
+				// 2026-11 从生产 bio 实测补充：走私车队话术、编辑过的招人话术。
+				"律师函", "内部项目", "结账效率",
+			},
+			// 简介里的 t.me/+ 是私密邀请链接（公开频道是 t.me/<name>，没有加号）。
+			// 关掉是保守默认；群里确认没人在简介放私密链接后再开。
+			BioJoinLinkReject: false,
 		},
 		Moderation: Moderation{
 			Enabled:          true,
@@ -682,6 +769,24 @@ func (c *Config) Validate() error {
 
 	if c.AdFilter.MatchMode != "contains" {
 		return errors.New("ad_filter.match_mode 首版只支持 contains")
+	}
+	for i, h := range c.AdFilter.Homophones {
+		if strings.TrimSpace(h.From) == "" || strings.TrimSpace(h.To) == "" {
+			return fmt.Errorf("ad_filter.homophones[%d] 的 from/to 不能为空", i)
+		}
+		if h.From == h.To {
+			return fmt.Errorf("ad_filter.homophones[%d] 的 from 与 to 相同（%q），无意义", i, h.From)
+		}
+	}
+	switch c.Gatekeeper.EnglishNamePolicy {
+	case "", "off":
+		c.Gatekeeper.EnglishNamePolicy = "off"
+	case "audit", "kick":
+	default:
+		return fmt.Errorf("gatekeeper.english_name_policy 只能是 off/audit/kick，当前 %q", c.Gatekeeper.EnglishNamePolicy)
+	}
+	if c.Privacy.RetentionDays < 0 || c.Privacy.RetentionDays > 3650 {
+		return fmt.Errorf("privacy.retention_days 必须在 0..3650，当前 %d", c.Privacy.RetentionDays)
 	}
 	switch c.AdFilter.BioLookupErrorPolicy {
 	case "audit_continue", "deny":

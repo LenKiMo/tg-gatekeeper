@@ -9,6 +9,7 @@ import (
 
 	"github.com/LenKiMo/tg-gatekeeper/internal/challenge"
 	"github.com/LenKiMo/tg-gatekeeper/internal/domain"
+	"github.com/LenKiMo/tg-gatekeeper/internal/filter"
 	"github.com/LenKiMo/tg-gatekeeper/internal/image"
 	"github.com/LenKiMo/tg-gatekeeper/internal/ports"
 	"github.com/LenKiMo/tg-gatekeeper/internal/telegram"
@@ -74,28 +75,61 @@ func (s *Service) verifyNewMember(ctx context.Context, group domain.GroupConfig,
 		return nil
 	}
 
-	// 广告词检查：先看昵称，再看简介（简介失败按配置策略处理）。
+	// 广告词检查：先看昵称，再读一次资料（简介 + username + 头像）。
+	//
+	// 资料是一次 getChat 拿全的：广告词要简介、bot 农场规则要 username 与头像，
+	// 分开调就是把同一个接口打两三遍（每次入群都付一次 RTT）。
 	if word, hit := s.adFilter.Check(m.DisplayName, group.AdWords); hit {
+		s.noteProfile(ctx, group, m.UserID, m.DisplayName, ports.UserProfile{},
+			profileDecisionAdName, word, word)
 		return s.rejectByFilter(ctx, group, m, word, "display_name")
 	}
+
+	var prof ports.UserProfile
+	var profErr error
+	if s.cfg.AdFilter.Enabled || s.englishNamePolicy() != "off" || s.collectProfiles() {
+		prof, profErr = s.api.GetUserProfile(ctx, m.UserID)
+	}
+
 	if s.cfg.AdFilter.Enabled {
-		bio, err := s.api.GetBio(ctx, m.UserID)
 		switch {
-		case err == nil:
-			if word, hit := s.adFilter.Check(bio, group.AdWords); hit {
+		case profErr == nil:
+			// 简介用 CheckBio：多一层 bio_words（日挣/USDT/搬砖/跑分 这类只在简介里
+			// 才高精度的词）。命中同样不出题，直接按广告词处置。
+			if word, hit := s.adFilter.CheckBio(prof.Bio, group.AdWords); hit {
+				s.noteProfile(ctx, group, m.UserID, m.DisplayName, prof,
+					profileDecisionAdBio, word, word)
 				return s.rejectByFilter(ctx, group, m, word, "bio")
 			}
 		case s.cfg.AdFilter.BioLookupErrorPolicy == "deny":
 			s.audit(ctx, ports.AuditEvent{
 				Event: "verify.bio_lookup_failed", ChatID: group.ChatID, UserID: m.UserID,
-				Result: "deny", ErrorClass: classify(err), Mode: string(group.Mode),
+				Result: "deny", ErrorClass: classify(profErr), Mode: string(group.Mode),
 			})
 			return s.rejectByFilter(ctx, group, m, "", "bio_unavailable")
 		default:
 			s.audit(ctx, ports.AuditEvent{
 				Event: "verify.bio_lookup_failed", ChatID: group.ChatID, UserID: m.UserID,
-				Result: "audit_continue", ErrorClass: classify(err), Mode: string(group.Mode),
+				Result: "audit_continue", ErrorClass: classify(profErr), Mode: string(group.Mode),
 			})
+		}
+	}
+
+	// bot 农场特征链：两词英文名 **且** 无 username **且** 无简介 **且** 无头像。
+	// 三个"无"缺一不可——"Jack Smith" 也可能是真人，只有资料全空才是有意义的信号。
+	if policy := s.englishNamePolicy(); policy != "off" && profErr == nil &&
+		filter.IsPlainEnglishName(m.DisplayName) &&
+		prof.Bio == "" && prof.Username == "" && !prof.HasPhoto {
+		s.noteProfile(ctx, group, m.UserID, m.DisplayName, prof,
+			profileDecisionEnglishName, "english_name", "")
+		s.audit(ctx, ports.AuditEvent{
+			Event: "verify.bot_profile", ChatID: group.ChatID, UserID: m.UserID,
+			Result: policy, Mode: string(group.Mode), DisplayName: m.DisplayName,
+			NewState: string(domain.StateSkipped),
+			Extra:    map[string]string{"rule": "english_name", "name": m.DisplayName},
+		})
+		if policy == "kick" {
+			return s.kickBotProfile(ctx, group, m)
 		}
 	}
 
@@ -103,6 +137,7 @@ func (s *Service) verifyNewMember(ctx context.Context, group domain.GroupConfig,
 	if err != nil {
 		return err
 	}
+	s.noteProfile(ctx, group, m.UserID, m.DisplayName, prof, profileDecisionVerify, "", "")
 	if sess.ID != "" {
 		s.audit(ctx, ports.AuditEvent{
 			Event: "verify.started", ChatID: group.ChatID, UserID: m.UserID,
@@ -593,8 +628,27 @@ func (s *Service) rejectRequestByAdWord(ctx context.Context, group domain.GroupC
 	return s.declineRequest(ctx, group.ChatID, userID)
 }
 
-// rejectByFilter 处置"已进群/正在入群的人命中广告词"：封禁 ad_word_ban_days 天。
+// englishNamePolicy 返回生效的 bot 农场策略（off/audit/kick），已归一化大小写。
+func (s *Service) englishNamePolicy() string {
+	switch p := strings.ToLower(strings.TrimSpace(s.cfg.Gatekeeper.EnglishNamePolicy)); p {
+	case "audit", "kick":
+		return p
+	default:
+		return "off"
+	}
+}
+
+// kickBotProfile 静默踢出命中 bot 农场特征链的成员：不出题、不发任何提示。
 //
+// 用的是与"超时踢出"同一条路径——一次带 until 的定时封禁，到期由 Telegram 自动解除
+// （kick_unban_after_seconds）。到期时间在执行这一刻才换算：提前算好会被重试拖成过去
+// 时间，那样就成了永久封禁。
+func (s *Service) kickBotProfile(ctx context.Context, group domain.GroupConfig, m Member) error {
+	until := time.Now().Add(s.cfg.KickUnbanAfter()).Unix()
+	return s.api.Ban(ctx, group.ChatID, m.UserID, s.cfg.Gatekeeper.RevokeMessagesOnBan, until)
+}
+
+// rejectByFilter 处置"已进群/正在入群的人命中广告词"：封禁 ad_word_ban_days 天。
 // 只走入群模式；申请模式在 OnJoinRequest 里单独处置（见 rejectRequestByAdWord），
 // 以前这里留着的申请分支永远走不到，是死代码。
 func (s *Service) rejectByFilter(ctx context.Context, group domain.GroupConfig, m Member, word, field string) error {

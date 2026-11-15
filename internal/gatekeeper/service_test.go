@@ -48,6 +48,9 @@ type fakeAPI struct {
 	bioErr     error
 	// bios 是每个用户的简介（广告词过滤读它）；缺省为空。
 	bios map[int64]string
+	// profiles 覆盖 GetUserProfile 的完整返回值（username/头像）；缺省由 bios 推出。
+	profiles   map[int64]ports.UserProfile
+	profileErr error
 	// challengeErr 非 nil 时，SendChallenge 直接失败——用来模拟申请模式下
 	// "用户没点过机器人，Telegram 不允许主动私聊"。
 	challengeErr error
@@ -155,6 +158,20 @@ func (f *fakeAPI) GetBio(_ context.Context, userID int64) (string, error) {
 	return f.bios[userID], nil
 }
 
+// GetUserProfile 与 GetBio 共用 bioErr/bios，另外支持用 profiles 覆盖 username/头像。
+func (f *fakeAPI) GetUserProfile(_ context.Context, userID int64) (ports.UserProfile, error) {
+	if f.profileErr != nil {
+		return ports.UserProfile{}, f.profileErr
+	}
+	if f.bioErr != nil {
+		return ports.UserProfile{}, f.bioErr
+	}
+	if p, ok := f.profiles[userID]; ok {
+		return p, nil
+	}
+	return ports.UserProfile{Bio: f.bios[userID]}, nil
+}
+
 func (f *fakeAPI) IsAdminWithPermissions(_ context.Context, _ int64, userID int64, _ uint16) (bool, error) {
 	return f.admins[userID], nil
 }
@@ -229,6 +246,12 @@ func testService(t *testing.T, mutate func(*config.Config)) (*Service, *fakeAPI,
 	deletion := store.NewMemDeletionQueue()
 	groups := store.NewMemGroupStore()
 
+	// 资料采集默认关闭：只有显式设置了 testProfiles 的用例才注入（避免接口 typed-nil）。
+	var profiles ports.ProfileStore
+	if testProfiles != nil {
+		profiles = testProfiles
+	}
+
 	svc, err := New(Deps{
 		Config:   cfg,
 		API:      api,
@@ -239,6 +262,7 @@ func testService(t *testing.T, mutate func(*config.Config)) (*Service, *fakeAPI,
 		Audit:    nil,
 		Provider: &fakeSource{snap: domain.Snapshot{SourceID: "test", Entries: entries, LoadedAt: time.Now()}},
 		Logger:   slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		Profiles: profiles,
 	})
 	if err != nil {
 		t.Fatal(err)
