@@ -250,6 +250,16 @@ func (s *Service) OnCallback(ctx context.Context, cb CallbackEvent) error {
 		if at.After(session.ExpiresAt) {
 			_ = s.api.AnswerCallback(ctx, cb.ID, "时间已到", true)
 		} else if session.IsCorrectToken(parsed.Token) {
+			// 放行前复查简介：入群时的 bio 查询可能失败；管理员也可能在看不到简介的
+			// 情况下点了放行；答题窗口够长，足够改一次简介。命中就按广告号处置
+			// （ad_word_ban_days），不给他放行。
+			if word, hit := s.adRecheckOnPass(ctx, group, session.Key.UserID, session.DisplayName); hit {
+				_ = s.api.AnswerCallback(ctx, cb.ID, "简介命中广告词「"+word+"」，按广告号处置", true)
+				res, cerr := s.claimByID(ctx, session, domain.Event{
+					Kind: domain.EventAdBan, SessionID: session.ID, At: at,
+				})
+				return s.finishClaim(ctx, group, res, cerr, "callback.ad_recheck")
+			}
 			_ = s.api.AnswerCallback(ctx, cb.ID, "回答正确", false)
 		} else {
 			text := "回答错误"
@@ -275,7 +285,18 @@ func (s *Service) OnCallback(ctx context.Context, cb CallbackEvent) error {
 		if parsed.Kind == telegram.CallbackAdminBan {
 			kind = domain.EventAdminBan
 		}
-		_ = s.api.AnswerCallback(ctx, cb.ID, "已处理", false)
+		// 管理员点"放行"时看不到对方简介：这里补一次检查，命中就改走广告号处置。
+		// 管理员点"封禁"不复查——已经要封了，多一次 API 调用没有意义。
+		if kind == domain.EventAdminPass {
+			if word, hit := s.adRecheckOnPass(ctx, group, session.Key.UserID, session.DisplayName); hit {
+				_ = s.api.AnswerCallback(ctx, cb.ID, "简介命中广告词「"+word+"」，已按广告号处置", true)
+				kind = domain.EventAdBan
+			} else {
+				_ = s.api.AnswerCallback(ctx, cb.ID, "已处理", false)
+			}
+		} else {
+			_ = s.api.AnswerCallback(ctx, cb.ID, "已处理", false)
+		}
 		res, err := s.claimByID(ctx, session, domain.Event{
 			Kind: kind, SessionID: session.ID, ActorID: cb.UserID, At: time.Now(),
 		})
@@ -654,6 +675,40 @@ func (s *Service) englishNamePolicy() string {
 func (s *Service) kickBotProfile(ctx context.Context, group domain.GroupConfig, m Member) error {
 	until := time.Now().Add(s.cfg.KickUnbanAfter()).Unix()
 	return s.api.Ban(ctx, group.ChatID, m.UserID, s.cfg.Gatekeeper.RevokeMessagesOnBan, until)
+}
+
+// adRecheckOnPass 在"即将放行"这一刻复查简介，返回命中的词。
+//
+// 为什么这一刻要再查一次（入群时明明查过）：
+//   - 入群时的 getChat 可能失败；bio_lookup_error_policy=audit_continue 会继续出题，
+//     于是这个人的简介从来没被检查过就等在放行门口。
+//   - 管理员点"✅ 放行"时看不到对方的简介，放行的可能是个写着"进群了解一天5万"的号。
+//   - 答题窗口有几十秒，足够改一次简介（实测投放方是批量改的）。
+//
+// 读不到资料一律放行：与入群时的 audit_continue 保持同一立场——宁可漏，不可因机器人
+// 自身故障把人挡在门外。
+func (s *Service) adRecheckOnPass(ctx context.Context, group domain.GroupConfig, userID int64, displayName string) (string, bool) {
+	if !s.cfg.AdFilter.Enabled || !s.cfg.AdFilter.RecheckOnPass {
+		return "", false
+	}
+	prof, err := s.api.GetUserProfile(ctx, userID)
+	if err != nil {
+		s.audit(ctx, ports.AuditEvent{
+			Event: "verify.bio_recheck_failed", ChatID: group.ChatID, UserID: userID,
+			Result: "audit_continue", ErrorClass: classify(err), DisplayName: displayName,
+		})
+		return "", false
+	}
+	word, hit := s.adFilter.CheckBio(prof.Bio, group.AdWords)
+	if !hit {
+		return "", false
+	}
+	s.audit(ctx, ports.AuditEvent{
+		Event: "verify.ad_rejected", ChatID: group.ChatID, UserID: userID,
+		Result: "ban", Mode: string(group.Mode), DisplayName: displayName,
+		Extra: map[string]string{"field": "bio_on_pass", "word": word},
+	})
+	return word, true
 }
 
 // rejectByFilter 处置"已进群/正在入群的人命中广告词"：封禁 ad_word_ban_days 天。

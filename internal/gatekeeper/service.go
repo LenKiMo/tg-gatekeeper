@@ -367,10 +367,19 @@ func (s *Service) effectPlan(group domain.GroupConfig, caption string) ports.Eff
 				add(domain.EffectDecline, chatUser, 0)
 			}
 			// 管理员手动封禁：admin_ban_seconds（默认 7 天）后由 Telegram 自动解除；
-			// 配成 0 才是永久。申请模式下同样是"拒绝申请 + 这段时间内不能再申请"。
+			// 配成 0 才是永久。
+			//
+			// EventAdBan 走同一个终态但用不同的账：那是"放行前复查简介命中广告词"，
+			// 属于广告号，该按 ad_word_ban_days（默认 30 天）封，而且撤回历史消息的
+			// 策略也与广告词拦截保持一致（由 applyTempBan 里的 reason 决定）。
+			seconds, reason := cfg.Gatekeeper.AdminBanSeconds, banReasonAdmin
+			if ev.Kind == domain.EventAdBan {
+				seconds = cfg.Gatekeeper.AdWordBanDays * 86400
+				reason = banReasonAdRecheck
+			}
 			add(domain.EffectBan, withText(chatUser, map[string]string{
-				"seconds": itoa(int64(cfg.Gatekeeper.AdminBanSeconds)),
-				"reason":  string(banReasonAdmin),
+				"seconds": itoa(int64(seconds)),
+				"reason":  string(reason),
 			}), 0)
 			deleteChallenge()
 			deleteJoin()

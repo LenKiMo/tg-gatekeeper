@@ -21,6 +21,8 @@ const (
 	banReasonAdmin banReason = "admin_ban"
 	// banReasonAdRequest 申请模式下命中广告词，且配了 ad_word_request_ban_days > 0。
 	banReasonAdRequest banReason = "request_ad_word"
+	// banReasonAdRecheck 放行前复查简介命中广告词（含管理员点了"放行"的情况）。
+	banReasonAdRecheck banReason = "ad_recheck"
 )
 
 // botFault 判断这次封禁是不是机器人自身故障造成的。这类封禁错不在用户，

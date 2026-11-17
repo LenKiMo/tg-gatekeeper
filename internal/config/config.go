@@ -127,7 +127,11 @@ type AdFilter struct {
 	BioWords    []string `yaml:"bio_words"` // 只在简介上生效的追加词
 	// BioJoinLinkReject 为 true 时，简介里出现 t.me/+ 私密邀请链接即判广告。
 	// 只作用于简介层：公开频道链接是 t.me/<name>（无加号），私密邀请才是 +<hash>。
-	BioJoinLinkReject    bool        `yaml:"bio_join_link_reject"`
+	BioJoinLinkReject bool `yaml:"bio_join_link_reject"`
+	// RecheckOnPass 为 true 时，在"即将放行"这一刻再查一次简介（答题正确与管理员点
+	// "放行"都算）。补的是两种漏检：入群时 getChat 失败（bio_lookup_error_policy=
+	// audit_continue 会继续出题），以及管理员在不知道简介写了什么的情况下点了放行。
+	RecheckOnPass        bool        `yaml:"recheck_on_pass"`
 	SkeletonWords        []string    `yaml:"skeleton_words"` // 去掉 emoji/符号后匹配的词（默认空）
 	Homophones           []Homophone `yaml:"homophones"`     // 谐音/拆字还原规则
 	IncludeGroupWords    bool        `yaml:"include_group_words"`
@@ -481,6 +485,9 @@ func Default() *Config {
 			// 简介里的 t.me/+ 是私密邀请链接（公开频道是 t.me/<name>，没有加号）。
 			// 关掉是保守默认；群里确认没人在简介放私密链接后再开。
 			BioJoinLinkReject: false,
+			// 放行前复查简介：默认开。成本是每次放行多一次 getChat（约 200ms，
+			// 每天十来次），换来的是"入群时 bio 查询失败"和"管理员盲放行"两个口子。
+			RecheckOnPass: true,
 		},
 		Moderation: Moderation{
 			Enabled:          true,

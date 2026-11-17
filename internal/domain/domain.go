@@ -213,9 +213,12 @@ const (
 	EventTimeout   EventKind = "timeout"
 	EventAdminPass EventKind = "admin_pass"
 	EventAdminBan  EventKind = "admin_ban"
-	EventSpoke     EventKind = "spoke"
-	EventLeft      EventKind = "left"
-	EventCancel    EventKind = "cancel"
+	// EventAdBan 是"放行前复查简介命中广告词"的自动处置：终态与 admin_ban 相同，
+	// 但封禁时长取 ad_word_ban_days、审计原因不同（一个误放行的引流号不该只封 7 天）。
+	EventAdBan  EventKind = "ad_ban"
+	EventSpoke  EventKind = "spoke"
+	EventLeft   EventKind = "left"
+	EventCancel EventKind = "cancel"
 )
 
 // Event 是提交给注册表的一次输入。
