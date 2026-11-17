@@ -2,6 +2,26 @@
 
 只记录**会改变默认行为**的变更；其余修复见提交记录与 Release 说明。
 
+## v1.3.0
+
+**入群账本：各层不再靠"流程走完"才生效。**
+
+- 入群第一刻先落一条 `Preparing` 空壳会话（`beginJoinLedger`），此后无论哪一步失败——
+  `getChat` 挂、禁言 429、进程被杀——都不会变成静默放行：空壳到期后由既有的
+  `scanExpired` 按超时处置（入群模式 = 踢出）。以前会话只在"决定出题"时才建，
+  预检阶段失败的人既没有会话也没有副作用，等于放行。
+- 预检命中的处置改走 **outbox**：`EventAdBan`（30 天封禁）与新增的 `EventKick`
+  （bot 农场静默踢）都由 `effectPlan` 生成副作用、写 `effects` 表，先同步试一次，
+  失败由 `effectLoop` 按退避重试。以前是直接调一次 `api.Ban`，429 之后只剩一行审计。
+- 新增事件 `EventKick`：终态复用 `StateTimedOut`，但不看 `expires_at`（复用超时事件
+  会被"还没到期"的判定拦住）。
+- `beginJoinLedger` 与 `startVerification` 的重复信号判定互不干扰：账本用 `UpdateID=0`
+  标记，正式会话用真实 updateID 原子替换它；已有非终态会话时不重复建账本。
+
+设计依据：5 个模型（gemini-4-argon / glm-5.3 / qwen3.8-max / gpt-6-astra /
+claude-opus-5-5）对防 spam 架构的独立评审，结论一致指向"缺少持久、可恢复的入群
+账本"与"处置动作不是幂等待办"，而不是再增加检查层。
+
 ## v1.2.3
 
 - 修复 fail-open：`RestrictNoMessages` 失败时不再一律"按跳过验证处理"。老代码的

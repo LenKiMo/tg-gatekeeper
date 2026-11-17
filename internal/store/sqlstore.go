@@ -609,6 +609,9 @@ func decide(s domain.Session, ev domain.Event) (domain.SessionState, string) {
 	case domain.EventAdBan:
 		// 与自动封禁共用终态：副作用层按事件类型区分封禁时长与原因。
 		return domain.StateAdminBan, ""
+	case domain.EventKick:
+		// 与超时共用终态（临时踢出）；区别是不看 expires_at。
+		return domain.StateTimedOut, ""
 	case domain.EventSpoke:
 		if s.State == domain.StatePreparing {
 			// 还在准备阶段就发言：同样按违规处理。

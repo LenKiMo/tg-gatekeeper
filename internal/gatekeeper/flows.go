@@ -75,6 +75,14 @@ func (s *Service) verifyNewMember(ctx context.Context, group domain.GroupConfig,
 		return nil
 	}
 
+	// 先落账（"各层互相兜底"的支点）：从这一刻起，任何失败都不会变成静默放行。
+	// 空壳会话会在下面的分支里被替换或收进终态；如果进程恰好在这里被杀，它到期后
+	// 由 scanExpired 按超时处置（入群模式 = 踢出）。
+	ledger, err := s.beginJoinLedger(ctx, group, m.UserID, m.DisplayName)
+	if err != nil {
+		return err
+	}
+
 	// 广告词检查：先看昵称，再读一次资料（简介 + username + 头像）。
 	//
 	// 资料是一次 getChat 拿全的：广告词要简介、bot 农场规则要 username 与头像，
@@ -82,7 +90,7 @@ func (s *Service) verifyNewMember(ctx context.Context, group domain.GroupConfig,
 	if word, hit := s.adFilter.Check(m.DisplayName, group.AdWords); hit {
 		s.noteProfile(ctx, group, m.UserID, m.DisplayName, ports.UserProfile{},
 			profileDecisionAdName, word, word)
-		return s.rejectByFilter(ctx, group, m, word, "display_name")
+		return s.rejectJoinByAdWord(ctx, group, ledger, m, word, "display_name")
 	}
 
 	var prof ports.UserProfile
@@ -99,14 +107,14 @@ func (s *Service) verifyNewMember(ctx context.Context, group domain.GroupConfig,
 			if word, hit := s.adFilter.CheckBio(prof.Bio, group.AdWords); hit {
 				s.noteProfile(ctx, group, m.UserID, m.DisplayName, prof,
 					profileDecisionAdBio, word, word)
-				return s.rejectByFilter(ctx, group, m, word, "bio")
+				return s.rejectJoinByAdWord(ctx, group, ledger, m, word, "bio")
 			}
 		case s.cfg.AdFilter.BioLookupErrorPolicy == "deny":
 			s.audit(ctx, ports.AuditEvent{
 				Event: "verify.bio_lookup_failed", ChatID: group.ChatID, UserID: m.UserID,
 				Result: "deny", ErrorClass: classify(profErr), Mode: string(group.Mode),
 			})
-			return s.rejectByFilter(ctx, group, m, "", "bio_unavailable")
+			return s.rejectJoinByAdWord(ctx, group, ledger, m, "", "bio_unavailable")
 		default:
 			s.audit(ctx, ports.AuditEvent{
 				Event: "verify.bio_lookup_failed", ChatID: group.ChatID, UserID: m.UserID,
@@ -135,10 +143,12 @@ func (s *Service) verifyNewMember(ctx context.Context, group domain.GroupConfig,
 			Extra:    map[string]string{"rule": "english_name", "name": m.DisplayName},
 		})
 		if policy == "kick" {
-			return s.kickBotProfile(ctx, group, m)
+			return s.kickJoinBot(ctx, group, ledger, m)
 		}
 	}
 
+	// 预检通过：startVerification 用真实 updateID 重新 Begin，把空壳原子替换掉
+	// （旧的进 session.replaced 审计）。这一步失败也不会丢账——空壳还在，到期会踢。
 	sess, err := s.startVerification(ctx, group, m.UserID, m.DisplayName, domain.SessionJoin, domain.MessageRef{}, updateID)
 	if err != nil {
 		return err
@@ -375,6 +385,64 @@ func withJoinMessage(ref domain.MessageRef) startOption {
 	return func(o *startOpts) { o.joinMessage = ref }
 }
 
+// beginJoinLedger 在入群第一刻落一条"空壳"会话，作为本次入群的账本。
+//
+// 这是"各层互相兜底"的支点。以前会话是在"决定出题"时才建（startVerification 里），
+// 于是预检阶段的任何失败——getChat 挂、禁言 429、进程被杀——都既没有会话、也没有
+// 副作用，等于静默放行（生产实例：2026-11-17 01:55 的 Judy Bach 就这样进了群）。
+//
+// 现在入群第一件事就是写这条记录。它只保证一件事：**这个人有人在等结论**。之后：
+//   - 预检命中 → settleJoinLedger 收进 Cancel，再按广告词处置；
+//   - 预检通过 → startVerification 用真实 updateID 重新 Begin，原子的"替换"掉空壳；
+//   - 中途失败/进程被杀 → 空壳留在 Preparing，scanExpired 到期后按超时处置（踢出）。
+//
+// UpdateID 刻意写 0：Begin 的幂等判断是 `cur.UpdateID == s.UpdateID && cur.UpdateID != 0`，
+// 写 0 既不会和"同一 update 重复投递"混淆，也让后面那次 Begin 一定走替换路径。
+func (s *Service) beginJoinLedger(ctx context.Context, group domain.GroupConfig, userID int64,
+	displayName string) (domain.Session, error) {
+	// 已有进行中的会话（另一条入群通道先到，或用户还没走完验证）：不再建账本，
+	// 直接当作重复信号返回。这与 startVerification 里原来的"先查后建"同义。
+	if cur, err := s.registry.Get(ctx, domain.SessionKey{ChatID: group.ChatID, UserID: userID}); err == nil &&
+		!cur.State.Terminal() {
+		return domain.Session{}, nil
+	}
+	id, err := domain.NewSessionID()
+	if err != nil {
+		return domain.Session{}, err
+	}
+	now := time.Now()
+	sess := domain.Session{
+		ID:          id,
+		Key:         domain.SessionKey{ChatID: group.ChatID, UserID: userID},
+		UpdateID:    0,
+		Mode:        domain.SessionJoin,
+		State:       domain.StatePreparing,
+		DisplayName: displayName,
+		StartedAt:   now,
+		ExpiresAt:   now.Add(s.cfg.VerifyTimeout() + s.cfg.PrecheckGrace()),
+		Version:     1,
+	}
+	begin, err := s.registry.Begin(ctx, sess)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if begin.Duplicate {
+		// 同一用户已有进行中的会话（两条入群通道到达），账本不必再建。
+		return domain.Session{}, nil
+	}
+	return begin.Session, nil
+}
+
+// settleJoinLedger 把账本会话收进 Cancel 终态，避免它在处置之后又被当成超时踢一次。
+func (s *Service) settleJoinLedger(ctx context.Context, group domain.GroupConfig, sess domain.Session) {
+	if sess.ID == "" {
+		return
+	}
+	_, _ = s.registry.Claim(ctx, sess.Key, domain.Event{
+		Kind: domain.EventCancel, SessionID: sess.ID, At: time.Now(),
+	}, s.effectPlan(group, ""))
+}
+
 // startVerification 生成题目、限制用户、发题并登记会话。
 func (s *Service) startVerification(ctx context.Context, group domain.GroupConfig, userID int64,
 	displayName string, mode domain.SessionMode, joinMessage domain.MessageRef, updateID int, opts ...startOption) (domain.Session, error) {
@@ -388,7 +456,9 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 	// 同一用户已有进行中的会话时不再重复出题；否则会出现两道并存的题、旧题无人清理。
 	// 分派器对同一群/用户是严格 FIFO，因此这里"先查后建"不会与并发出题打架。
 	if cur, err := s.registry.Get(ctx, domain.SessionKey{ChatID: group.ChatID, UserID: userID}); err == nil {
-		if !cur.State.Terminal() {
+		// UpdateID==0 是 beginJoinLedger 落的账本空壳（预检前那条 "这个人在等结论" 的记录）。
+		// 它不是"两条入群通道"的重复信号，要继续往下走 Begin——那次 Begin 会原子替换它。
+		if !cur.State.Terminal() && cur.UpdateID != 0 {
 			s.audit(ctx, ports.AuditEvent{
 				Event: "verify.duplicate_signal", ChatID: group.ChatID, UserID: userID,
 				DisplayName: displayName, Mode: string(group.Mode),
@@ -692,6 +762,56 @@ func (s *Service) englishNamePolicy() string {
 func (s *Service) kickBotProfile(ctx context.Context, group domain.GroupConfig, m Member) error {
 	until := time.Now().Add(s.cfg.KickUnbanAfter()).Unix()
 	return s.api.Ban(ctx, group.ChatID, m.UserID, s.cfg.Gatekeeper.RevokeMessagesOnBan, until)
+}
+
+// rejectJoinByAdWord 把"预检命中广告词"收进终态：EventAdBan → 按 ad_word_ban_days 封禁。
+//
+// 关键在于**副作用走 outbox**（effects 表，由 effectLoop 重试）：以前这里直接调一次
+// api.Ban，429/网络抖动一失败就只剩一行日志，人还在群里。现在失败的封禁会被重试，
+// 直到成功或明确判定为永久错误。
+//
+// 账本会话缺失或被替换（极小概率）时退回直接封禁——宁可重复封一次，也不能放过。
+func (s *Service) rejectJoinByAdWord(ctx context.Context, group domain.GroupConfig, sess domain.Session,
+	m Member, word, field string) error {
+	days := s.cfg.Gatekeeper.AdWordBanDays
+	extra := map[string]string{"field": field, "ban_days": itoa(int64(days))}
+	if word != "" {
+		extra["word"] = word
+	}
+	s.audit(ctx, ports.AuditEvent{
+		Event: "verify.ad_rejected", ChatID: group.ChatID, UserID: m.UserID,
+		Result: "ban", Mode: string(group.Mode), DisplayName: m.DisplayName, Extra: extra,
+	})
+	if sess.ID == "" {
+		return s.api.Ban(ctx, group.ChatID, m.UserID, s.cfg.Gatekeeper.RevokeMessagesOnBan,
+			adBanUntil(days))
+	}
+	res, err := s.registry.Claim(ctx, sess.Key, domain.Event{
+		Kind: domain.EventAdBan, SessionID: sess.ID, At: time.Now(),
+	}, s.effectPlan(group, ""))
+	if err == nil && res.Won {
+		s.flushEffects(ctx, res.Effects)
+		return nil
+	}
+	// 账本已被替换/过期：直接封一次兜住，不让"状态不对"变成放行。
+	return s.api.Ban(ctx, group.ChatID, m.UserID, s.cfg.Gatekeeper.RevokeMessagesOnBan,
+		adBanUntil(days))
+}
+
+// kickJoinBot 静默踢出命中 bot 农场特征链的成员：EventKick → 临时踢（副作用走 outbox）。
+func (s *Service) kickJoinBot(ctx context.Context, group domain.GroupConfig, sess domain.Session,
+	m Member) error {
+	if sess.ID == "" {
+		return s.kickBotProfile(ctx, group, m)
+	}
+	res, err := s.registry.Claim(ctx, sess.Key, domain.Event{
+		Kind: domain.EventKick, SessionID: sess.ID, At: time.Now(),
+	}, s.effectPlan(group, ""))
+	if err == nil && res.Won {
+		s.flushEffects(ctx, res.Effects)
+		return nil
+	}
+	return s.kickBotProfile(ctx, group, m)
 }
 
 // adRecheckOnPass 在"即将放行"这一刻复查简介，返回命中的词。

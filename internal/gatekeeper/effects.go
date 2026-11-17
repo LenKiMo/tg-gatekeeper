@@ -63,6 +63,17 @@ func (s *Service) scanExpired(ctx context.Context) {
 	}
 }
 
+// flushEffects 立即尝试执行刚生成的副作用，失败则留给 effectLoop 重试。
+//
+// 预检阶段的处置（广告词封禁 / bot 农场踢出）必须"既快又不丢"：等 ticker 会拖几秒，
+// 但只做一次同步调用又会在 429 时彻底丢失。所以这里立刻打一次，失败的那条仍在
+// effects 表里，由 effectLoop 按退避重试。
+func (s *Service) flushEffects(ctx context.Context, effects []domain.Effect) {
+	for _, ef := range effects {
+		s.executeEffect(ctx, ef)
+	}
+}
+
 // runDueEffects 执行到期的副作用。
 func (s *Service) runDueEffects(ctx context.Context) {
 	effects, err := s.registry.ListDueEffects(ctx, time.Now(), 50)

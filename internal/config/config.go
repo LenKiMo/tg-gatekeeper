@@ -1028,6 +1028,13 @@ func (c *Config) VerifyTimeout() time.Duration {
 	return time.Duration(c.Gatekeeper.TimeoutSeconds) * time.Second
 }
 
+// PrecheckGrace 是"入群账本"空壳会话在预检阶段的生命期余量。
+//
+// 账本在入群第一刻落库、预检通过后立刻被正式会话替换，正常情况下只存在几百毫秒。
+// 这里的余量是给"进程恰好在预检中途被杀"留的：重启后 scanExpired 会看到这条已过期
+// 的空壳，按超时处置（入群模式 = 踢出），而不是让它静默留在群里。
+func (c *Config) PrecheckGrace() time.Duration { return 120 * time.Second }
+
 // Band 返回难度带（供 difficulty_band 策略使用）。
 func (d Difficulty) Band() int { return d.DifficultyBand }
 

@@ -215,7 +215,11 @@ const (
 	EventAdminBan  EventKind = "admin_ban"
 	// EventAdBan 是"放行前复查简介命中广告词"的自动处置：终态与 admin_ban 相同，
 	// 但封禁时长取 ad_word_ban_days、审计原因不同（一个误放行的引流号不该只封 7 天）。
-	EventAdBan  EventKind = "ad_ban"
+	EventAdBan EventKind = "ad_ban"
+	// EventKick 是"预检阶段判定为不可验证"（bot 农场特征链）时的静默踢出：终态与
+	// 超时相同（临时踢，kick_unban_after_seconds 后自动解封），但可以独立触发——
+	// 复用 EventTimeout 会被"还没到期"的判定拦住。
+	EventKick   EventKind = "kick"
 	EventSpoke  EventKind = "spoke"
 	EventLeft   EventKind = "left"
 	EventCancel EventKind = "cancel"
