@@ -252,6 +252,17 @@ type ProfileStore interface {
 	PurgeProfilesBefore(ctx context.Context, cutoff int64) (int64, error)
 }
 
+// BaselineStore 保存"已知在群成员"名册（懒触发复查用）。
+//
+// 与 ProfileStore 的区别：那张表是**脱敏**的分析语料；这张表要在热路径上按 user_id
+// 查"认不认识"，必须保留明文 id，否则没法比对。它不存昵称/简介，只回答"见没见过"。
+type BaselineStore interface {
+	UpsertBaseline(ctx context.Context, chatID int64, ids []int64, source string) (int, error)
+	HasBaseline(ctx context.Context, chatID, userID int64) (bool, error)
+	ListBaseline(ctx context.Context, chatID int64, limit int) ([]int64, error)
+	CountBaseline(ctx context.Context, chatID int64) (int, error)
+}
+
 // ---------------------------------------------------------------- Telegram
 
 // Button 是一个内联按钮。Data 是回调数据；URL 非空时是链接按钮（二者只用一个）。

@@ -8,16 +8,21 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/LenKiMo/tg-gatekeeper/internal/app"
 	"github.com/LenKiMo/tg-gatekeeper/internal/config"
 	"github.com/LenKiMo/tg-gatekeeper/internal/dataset"
+	"github.com/LenKiMo/tg-gatekeeper/internal/store"
 )
 
 const usage = `tg-gatekeeper - 通用"看图选名字"入群验证机器人
@@ -42,6 +47,8 @@ func main() {
 		must(checkConfigCmd(os.Args[2:]))
 	case "dataset":
 		must(datasetCmd(os.Args[2:]))
+	case "baseline":
+		must(baselineCmd(os.Args[2:]))
 	case "version":
 		fmt.Printf("tg-gatekeeper %s (%s/%s, %s)\n", version, runtime.GOOS, runtime.GOARCH, runtime.Version())
 	case "-h", "--help", "help":
@@ -54,7 +61,7 @@ func main() {
 
 // version 是构建版本号：源码构建显示下面这个值，发布流程用
 // -ldflags "-X main.version=<tag>" 覆盖成实际 tag。
-var version = "1.3.1"
+var version = "1.4.0"
 
 func runCmd(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
@@ -225,5 +232,85 @@ func must(err error) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)
 		os.Exit(1)
+	}
+}
+
+// baselineCmd 是"已知在群成员"名册的运维入口。
+//
+// 用法：
+//
+//	tg-gatekeeper baseline import -c config.yaml -f ids.txt [--source import]
+//	tg-gatekeeper baseline count  -c config.yaml
+//
+// ids.txt 每行一个 user_id（MTProto 导出即可），空行与 # 开头的行忽略。
+// 导入之后 gatekeeper.unknown_member_policy 才可以安全从 off 切到 audit/ban——
+// 否则 bot 上线前就在群的老成员第一次发言会被判成"来路不明"。
+func baselineCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("baseline 需要一个子命令：import | count")
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("baseline "+sub, flag.ExitOnError)
+	cfgPath := fs.String("c", "configs/gatekeeper.yaml", "配置文件路径")
+	file := fs.String("f", "", "user_id 列表文件（每行一个）")
+	source := fs.String("source", "import", "来源标记（import / observed / verified）")
+	_ = fs.Parse(args[1:])
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	stores, err := store.New(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stores.Close() }()
+	if stores.SQL == nil {
+		return errors.New("baseline 需要 SQLite 存储（storage.group_store=sqlite）")
+	}
+
+	switch sub {
+	case "count":
+		// chat_id=0 表示"全局名册"，所有群通用（单实例部署通常只服务一个群）。
+		n, err := stores.SQL.CountBaseline(ctx, 0)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("基线成员数：%d\n", n)
+		return nil
+	case "import":
+		if *file == "" {
+			return errors.New("import 需要 -f <文件>")
+		}
+		f, err := os.Open(*file)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		var ids []int64
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			id, perr := strconv.ParseInt(line, 10, 64)
+			if perr != nil {
+				continue // 非数字行跳过（导出文件可能带表头）
+			}
+			ids = append(ids, id)
+		}
+		if err := sc.Err(); err != nil {
+			return err
+		}
+		n, err := stores.SQL.UpsertBaseline(ctx, 0, ids, *source)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("已导入 %d 条（来源 %s）\n", n, *source)
+		return nil
+	default:
+		return fmt.Errorf("未知 baseline 子命令 %q", sub)
 	}
 }

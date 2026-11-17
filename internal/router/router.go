@@ -426,6 +426,13 @@ func (r *Router) handleMessage(u tgbotapi.Update) error {
 		}
 	}
 
+	// 懒触发复查：已入群成员的首次发言是唯一能低成本拿到 user_id 的时机。
+	// 只有"既无验证记录、也不在成员基线"的人才会触发后续动作（getChat 查简介），
+	// 已知成员在这里只是一次 map 查表。
+	if !isCommand && r.svc != nil {
+		r.svc.OnMemberSpoke(context.Background(), chatID, userID, displayName)
+	}
+
 	// 待验证发言拦截：同步查一次会话（本地索引查询），保证它排在命令处理之前。
 	if !isCommand {
 		if pending, err := r.svc.HasPendingSession(context.Background(), chatID, userID); err == nil && pending {

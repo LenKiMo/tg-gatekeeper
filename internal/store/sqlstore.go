@@ -103,6 +103,16 @@ var schemaStatements = []string{
 			expires_at INTEGER NOT NULL DEFAULT 0
 		)`,
 	`CREATE INDEX IF NOT EXISTS idx_profiles_ref ON profile_snapshots(ref)`,
+	// member_baseline 是"已知在群成员"的名册：baseline 导入（MTProto 导出）+ 运行时观察。
+	// 它只存 user_id，不存昵称/简介——用途是判断"这个人是不是 bot 见过的人"，
+	// 不用于内容分析，所以不需要脱敏（与 sessions 表同一口径）。
+	`CREATE TABLE IF NOT EXISTS member_baseline (
+			user_id INTEGER PRIMARY KEY,
+			chat_id INTEGER NOT NULL DEFAULT 0,
+			source TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL DEFAULT 0
+		)`,
+	`CREATE INDEX IF NOT EXISTS idx_baseline_chat ON member_baseline(chat_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_profiles_created ON profile_snapshots(created_at)`,
 }
 

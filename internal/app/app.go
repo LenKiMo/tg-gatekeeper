@@ -95,6 +95,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Provider: src,
 		Logger:   log,
 		Profiles: stores.Profiles,
+		Baseline: stores.SQL,
 	})
 	if err != nil {
 		_ = images.Close()

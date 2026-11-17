@@ -146,6 +146,16 @@ gatekeeper:
   # 信号，所以判据必须是"名字形状 + 三项资料同时为空"。默认 off——这是会直接踢人的
   # 规则，先跑 audit 看一天命中量再开 kick。
   english_name_policy: off
+
+  # 懒触发复查：某人在群里发言，但他既没有通过验证的记录、也不在成员基线
+  # （member_baseline）里时怎么处理：
+  #   off    不做任何事（默认；基线没建好之前别开，否则老成员会被批量判可疑）
+  #   audit  记录 member.unknown，并把这个人记进基线（下次不再查）
+  #   ban    记录 + getChat 查一次简介，简介命中广告词即按广告号处置；否则记进基线
+  # 场景：入群事件丢了（getUpdates 缓冲溢出/停机窗口）导致某人绕过全部入群检查静默
+  # 留在群里。补的办法就是在他发言时认出来。开之前先用 `tg-gatekeeper baseline import`
+  # 导入全量名单，避免误伤老成员。
+  unknown_member_policy: off
   failure_policy: deny             # deny（拒之门外）| allow（放行，安全性下降）
   # failure_policy=deny 时，因机器人自身故障（题目发不出去 / 出不了题）把新人请出去的
   # 封禁时长（秒），不能小于 60。到期后 Telegram 自动解封，但人已经不在群里了，需要

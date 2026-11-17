@@ -2,6 +2,21 @@
 
 只记录**会改变默认行为**的变更；其余修复见提交记录与 Release 说明。
 
+## v1.4.0
+
+- 新增**懒触发复查**（`gatekeeper.unknown_member_policy`: off|audit|ban，默认 off）：
+  已在群里的成员发言时，如果他既没有"验证通过"的历史记录、也不在成员基线
+  （`member_baseline`）里，说明入群事件丢失了（getUpdates 缓冲溢出/停机窗口），
+  导致他绕过全部入群检查静默留群。
+  - `audit`：写审计 `member.unknown` 并记入基线（下次不再查）；
+  - `ban`：调用 `getChat` 查简介，简介命中广告词即按广告号处置（30 天封禁）；
+    否则记入基线（正常成员付一次 API 代价，之后终身走内存缓存）。
+  - 判定有三级缓存：内存 `known` 集合（启动时预热）→ sessions 表 `passed` 记录 →
+    `member_baseline` 表。已知成员在发消息热路径上只有一次 map 查表。
+- 新增命令 `tg-gatekeeper baseline import -f ids.txt` / `count`：一次性导入全量成员
+  名册（MTProto 导出）。必须先导入基线再把 policy 切到 audit/ban，否则老成员第
+  一次发言会被误判。
+
 ## v1.3.1
 
 - **update offset 持久化**：已消费的位置写进 `meta.update_offset`，重启后从那里继续拉，

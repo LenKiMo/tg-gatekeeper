@@ -42,6 +42,14 @@ type Service struct {
 	profiles   ports.ProfileStore
 	privacyKey []byte
 
+	// baseline 是"已知在群成员"名册（懒触发复查用；nil 表示不支持）。
+	baseline ports.BaselineStore
+	// known 是已知成员的进程内缓存，warmed 记录哪些群已经灌过基线。
+	// 两者共用 knownMu：读多写少，发消息热路径上只做一次 map 查。
+	knownMu sync.RWMutex
+	known   map[int64]struct{}
+	warmed  map[int64]bool
+
 	gen atomic.Pointer[challenge.Generator]
 
 	refreshOnce sync.Once
@@ -64,6 +72,8 @@ type Deps struct {
 	Logger   *slog.Logger
 	// Profiles 可为 nil：为 nil 或 privacy.collect_profiles=false 时不写脱敏快照。
 	Profiles ports.ProfileStore
+	// Baseline 可为 nil：为 nil 时懒触发复查退化为"只认验证记录"。
+	Baseline ports.BaselineStore
 }
 
 // New 构造 Service。
@@ -93,6 +103,9 @@ func New(d Deps) (*Service, error) {
 		provider:  d.Provider,
 		log:       log,
 		profiles:  d.Profiles,
+		baseline:  d.Baseline,
+		known:     make(map[int64]struct{}, 2048),
+		warmed:    make(map[int64]bool, 4),
 		stopCh:    make(chan struct{}),
 		startedAt: time.Now(),
 	}

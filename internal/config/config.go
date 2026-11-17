@@ -220,14 +220,22 @@ type Gatekeeper struct {
 	// 实测：1841 条入群记录里 76% 是纯英文名（两个常见英文名拼起来），其中 92% 从不
 	// 答题。名字本身没有广告信号，所以判据必须是"名字形状 + 三项资料同时为空"。
 	// 默认 off——这是会直接踢人的规则，先在 audit 下看一天的命中量再开。
-	EnglishNamePolicy  string     `yaml:"english_name_policy"`
-	AnswerWrongAlert   bool       `yaml:"answer_wrong_alert"`
-	StaleCallbackAlert bool       `yaml:"stale_callback_alert"`
-	ButtonColumns      int        `yaml:"button_columns"`
-	CaptionJoin        string     `yaml:"caption_join"`
-	CaptionRequest     string     `yaml:"caption_request"`
-	AdminCardText      string     `yaml:"admin_card_text"`
-	Difficulty         Difficulty `yaml:"difficulty"`
+	EnglishNamePolicy string `yaml:"english_name_policy"`
+	// UnknownMemberPolicy 决定"已入群、但我们没有任何记录的人"在群里发言时怎么办：
+	// off（不处理）| audit（记录并收进基线）| ban（记录 + 查一次简介，命中广告词即处置）。
+	//
+	// 存在这个开关是因为入群事件并不可靠：getUpdates 缓冲溢出、relay 丢更新、停机窗口
+	// 都会让某个人绕过全部入群检查。补这个缺口只有一个不扫群的办法——在它发言时认出来。
+	// 默认 off：没有全量基线（member_baseline）时打开，会把 bot 上线前就在群的老成员
+	// 第一次发言判成可疑。
+	UnknownMemberPolicy string     `yaml:"unknown_member_policy"`
+	AnswerWrongAlert    bool       `yaml:"answer_wrong_alert"`
+	StaleCallbackAlert  bool       `yaml:"stale_callback_alert"`
+	ButtonColumns       int        `yaml:"button_columns"`
+	CaptionJoin         string     `yaml:"caption_join"`
+	CaptionRequest      string     `yaml:"caption_request"`
+	AdminCardText       string     `yaml:"admin_card_text"`
+	Difficulty          Difficulty `yaml:"difficulty"`
 }
 
 // Provider 是数据集配置。
@@ -788,6 +796,14 @@ func (c *Config) Validate() error {
 		if h.From == h.To {
 			return fmt.Errorf("ad_filter.homophones[%d] 的 from 与 to 相同（%q），无意义", i, h.From)
 		}
+	}
+	switch c.Gatekeeper.UnknownMemberPolicy {
+	case "", "off":
+		c.Gatekeeper.UnknownMemberPolicy = "off"
+	case "audit", "ban":
+	default:
+		return fmt.Errorf("gatekeeper.unknown_member_policy 只能是 off/audit/ban，当前 %q",
+			c.Gatekeeper.UnknownMemberPolicy)
 	}
 	switch c.Gatekeeper.EnglishNamePolicy {
 	case "", "off":
