@@ -105,6 +105,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 
 	r := router.NewRouter(client, svc, stores.Groups, dispatcher, cfg, log)
+	// 重启后从上次消费的 offset 继续拉，不清空停机窗口里的入群事件。
+	offset := stores.LoadUpdateOffset(ctx)
+	if offset > 0 {
+		log.Info("从持久化的 update offset 继续", "offset", offset)
+	}
+	r.SetOffset(offset)
+	r.SetOffsetSaver(stores.SaveUpdateOffset)
 	return &App{
 		cfg:        cfg,
 		log:        log,

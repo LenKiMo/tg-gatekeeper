@@ -28,7 +28,21 @@ type Router struct {
 	groups   ports.Store
 	cfg      *config.Config
 	log      *slog.Logger
+
+	// saveOffset 把"已消费到的 update_id+1"落库（可为 nil）。由 app 注入，内部自带
+	// 节流：每批长轮询结束时写一次就够，没必要每条更新都写库。
+	saveOffset func(context.Context, int64) error
+	// lastOffset 是本次运行中已消费的最大 offset，退出时兜底刷一次。
+	lastOffset int64
+	// startOffset 是启动时从库里读到的 offset（0 表示没有持久化或首次运行）。
+	startOffset int64
 }
+
+// SetOffsetSaver 注册 offset 落库回调（用于重启后不重放已处理事件）。
+func (r *Router) SetOffsetSaver(fn func(context.Context, int64) error) { r.saveOffset = fn }
+
+// SetOffset 设置启动 offset（来自持久化值；0 = 从头开始）。
+func (r *Router) SetOffset(start int64) { r.startOffset = start }
 
 // NewRouter 构造路由。
 func NewRouter(client *telegram.Client, svc *gatekeeper.Service, groups ports.Store, d ports.Dispatcher, cfg *config.Config, log *slog.Logger) *Router {
@@ -53,7 +67,12 @@ func (r *Router) Register() {
 // 完全不验证这类入群（生产群真实踩过：6 小时内 6 次入群全部静默漏掉）。
 func (r *Router) Run() {
 	startup := time.Now()
-	for u := range r.client.UpdatesChan(r.cfg.Bot.PollingTimeoutSeconds) {
+	// 一轮长轮询返回的更新是"已确认消费"的，可整批推进 offset；中途崩溃最多重放这一批，
+	// 而重复处理是安全的（入群有账本去重、回调由状态机 Claim 保证只赢一次）。
+	for u := range r.client.UpdatesChan(r.currentOffset(), r.cfg.Bot.PollingTimeoutSeconds) {
+		if u.UpdateID > 0 {
+			r.lastOffset = int64(u.UpdateID) + 1
+		}
 		if staleUpload(u, startup) {
 			continue // 启动时会一次性取回积压更新，不能把几小时前的旧事件当新事件处理
 		}
@@ -64,7 +83,29 @@ func (r *Router) Run() {
 			r.log.Warn("处理更新失败", "update_id", u.UpdateID, "err", err.Error())
 		}
 	}
+	r.flushOffset()
 }
+
+// currentOffset 返回本次启动要用的 offset（0 = 从头/无持久化）。
+func (r *Router) currentOffset() int {
+	return int(r.startOffset)
+}
+
+// flushOffset 把已消费的 offset 落库。
+func (r *Router) flushOffset() {
+	if r.saveOffset == nil || r.lastOffset <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.saveOffset(ctx, r.lastOffset); err != nil {
+		r.log.Warn("保存 update offset 失败", "err", err)
+	}
+}
+
+// replayWindow 是"停机窗口补偿"的上限：比这更早的入群事件不再补处理（人早已被别处
+// 清掉，补出题只会制造噪音）。
+const replayWindow = 6 * time.Hour
 
 // staleUpload 判断更新是否早于本次启动时刻。
 func staleUpload(u tgbotapi.Update, startup time.Time) bool {
@@ -77,12 +118,16 @@ func staleUpload(u tgbotapi.Update, startup time.Time) bool {
 	// 回调不参与积压过滤：按钮的有效性由会话状态机判定（Claim 校验 state/expires_at，
 	// 重复点击只有一个能赢），而这里能取到的时间是"出题时间"，不是"点击时间"。
 	// 拿它当判据会把重启前发出的卡片整个废掉——包括管理员卡片上的放行/封禁。
+	// 入群/申请类事件**不按"早于启动"丢弃**，只丢弃超过 replayWindow 的过旧事件。
+	// 原因：offset 持久化之后，重启会从上次消费处继续拉——如果这里仍按 startup 过滤，
+	// 停机窗口里的入群会被丢掉（表现为"有人进群、bot 毫无反应"），而那正是这一层要
+	// 兜住的缺口。补处理的代价可控：已有账本的会去重，人已退群时后续 API 会自然失败。
 	case u.ChatMember != nil:
-		ts = time.Unix(u.ChatMember.Date, 0)
+		return time.Unix(u.ChatMember.Date, 0).Before(startup.Add(-replayWindow))
+	case u.ChatJoinRequest != nil:
+		return time.Unix(u.ChatJoinRequest.Date, 0).Before(startup.Add(-replayWindow))
 	case u.MyChatMember != nil:
 		ts = time.Unix(u.MyChatMember.Date, 0)
-	case u.ChatJoinRequest != nil:
-		ts = time.Unix(u.ChatJoinRequest.Date, 0)
 	default:
 		return false
 	}

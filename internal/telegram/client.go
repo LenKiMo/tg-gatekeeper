@@ -168,8 +168,10 @@ func (c *Client) Bot() *tgbotapi.BotAPI { return c.api }
 // 必须显式订阅 chat_member：Telegram 默认不推送这一类型，而"用户自己点邀请链接入群"
 // 只会以 chat_member（成员状态 left→member）的形式送达，不会产生 new_chat_members
 // 消息。漏订阅的表现就是"有人入群、机器人毫无反应"，且没有任何错误日志可查。
-func (c *Client) UpdatesChan(timeoutSeconds int) tgbotapi.UpdatesChannel {
-	u := tgbotapi.NewUpdate(0)
+func (c *Client) UpdatesChan(offset int, timeoutSeconds int) tgbotapi.UpdatesChannel {
+	// offset 来自持久化的 update_offset：重启后从上次消费的位置继续，而不是从"当前
+	// 最新"重新开始——后者会静默丢掉停机窗口里的入群事件。
+	u := tgbotapi.NewUpdate(offset)
 	u.Timeout = timeoutSeconds
 	u.AllowedUpdates = []string{
 		"message",

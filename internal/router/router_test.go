@@ -60,16 +60,38 @@ func TestJoinedMembersRecordsInviter(t *testing.T) {
 	}
 }
 
-// TestStaleUploadSkipsBacklog 验证重启后不会把几小时前的积压更新当成新事件。
+// TestStaleUploadSkipsBacklog 验证重启后的积压处理边界。
+//
+// 语义分两类（v1.3.x 起）：
+//   - 普通消息：早于启动就丢（旧消息重放会刷屏、也没意义）；
+//   - 入群/申请事件：只在超过 replayWindow 时才丢——offset 持久化之后重启会从上次
+//     消费处继续拉，如果这里仍按 startup 过滤，停机窗口里的入群就被静默丢掉。
 func TestStaleUploadSkipsBacklog(t *testing.T) {
 	startup := time.Unix(1_700_000_000, 0)
-	old := tgbotapi.Update{ChatMember: &tgbotapi.ChatMemberUpdated{
+
+	// 普通消息：两小时前 → 过期。
+	oldMsg := tgbotapi.Update{Message: &tgbotapi.Message{Date: startup.Add(-2 * time.Hour).Unix()}}
+	if !staleUpload(oldMsg, startup) {
+		t.Error("两小时前的普通消息应判为过期")
+	}
+
+	// 入群事件：两小时前仍在补偿窗口内 → 要处理（补验证）。
+	inWindow := tgbotapi.Update{ChatMember: &tgbotapi.ChatMemberUpdated{
 		Date: startup.Add(-2 * time.Hour).Unix()}}
+	if staleUpload(inWindow, startup) {
+		t.Error("补偿窗口内的入群事件不应被判为过期（否则停机期间的入群会漏）")
+	}
+
+	// 入群事件：超过 6 小时 → 过期。
+	tooOld := tgbotapi.Update{ChatMember: &tgbotapi.ChatMemberUpdated{
+		Date: startup.Add(-(replayWindow + time.Hour)).Unix()}}
+	if !staleUpload(tooOld, startup) {
+		t.Error("超过补偿窗口的入群事件应判为过期")
+	}
+
+	// 启动之后的入群 → 正常处理。
 	fresh := tgbotapi.Update{ChatMember: &tgbotapi.ChatMemberUpdated{
 		Date: startup.Add(time.Minute).Unix()}}
-	if !staleUpload(old, startup) {
-		t.Error("两小时前的更新应判为过期")
-	}
 	if staleUpload(fresh, startup) {
 		t.Error("启动后的更新不应判为过期")
 	}
