@@ -2,6 +2,16 @@
 
 只记录**会改变默认行为**的变更；其余修复见提交记录与 Release 说明。
 
+## v1.2.3
+
+- 修复 fail-open：`RestrictNoMessages` 失败时不再一律"按跳过验证处理"。老代码的
+  注释写的是"避免误踢管理员"，但它没有真的确认对方身份——任何失败（限流、网络、
+  权限不足）都会让新成员**不经验证留在群里**，与 `failure_policy: deny` 的语义相反。
+  现在会先查 `IsAdminWithPermissions`：确认是管理员/创建者才跳过，其余按
+  `failure_policy` 处置（deny 时按 `failure_ban_seconds` 临时封禁）。
+  生产原型：2026-11-17 01:55 的 uid 9266676380（"Judy Bach"），`getChat` 失败 +
+  禁言失败两次抖动后静默留群，其 bio 为 `t.me/+… 来单有码就能做随便一天挣九千`。
+
 ## v1.2.2
 
 - 新增 `ad_filter.recheck_on_pass`（默认开）：在"即将放行"这一刻再复查一次简介，

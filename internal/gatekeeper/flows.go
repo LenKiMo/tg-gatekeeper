@@ -469,11 +469,28 @@ func (s *Service) startVerification(ctx context.Context, group domain.GroupConfi
 				Event: "verify.restrict_failed", ChatID: group.ChatID, UserID: userID,
 				SessionID: session.ID, Result: "failed", ErrorClass: classify(err), Mode: string(mode),
 			})
-			// 限制失败（常见原因：对方是管理员/创建者）→ 按"跳过验证"处理，避免误踢管理员。
+			// 禁言失败 ≠ 对方是管理员。这里必须先确认身份：只有确实是管理员/创建者才
+			// 跳过验证（否则会把群主踢出去），其余失败（限流、网络、权限不足）说明这次
+			// 验证根本做不了。
+			//
+			// 以前这里一律按"跳过验证"处理，于是"getChat 失败 + 禁言失败"两次 API 抖动
+			// 会让一个 spam 号静默留在群里（生产实例：2026-11-17 01:55 的 Judy Bach，
+			// bio 是 t.me/+ 私聊链接 + 一天挣九千）。禁言失败后按 failure_policy 处置。
+			isAdmin := false
+			if v, aerr := s.api.IsAdminWithPermissions(ctx, group.ChatID, userID, ports.AdminCanRestrictMembers); aerr == nil {
+				isAdmin = v
+			}
+			if isAdmin {
+				_, _ = s.registry.Claim(ctx, session.Key, domain.Event{
+					Kind: domain.EventCancel, SessionID: session.ID, At: time.Now(),
+				}, nil)
+				return domain.Session{}, nil
+			}
 			_, _ = s.registry.Claim(ctx, session.Key, domain.Event{
 				Kind: domain.EventCancel, SessionID: session.ID, At: time.Now(),
 			}, nil)
-			return domain.Session{}, nil
+			s.challengeFailed(ctx, group, userID, displayName, banReasonRestrictFailed, err, false)
+			return domain.Session{}, fmt.Errorf("禁言失败: %w", err)
 		}
 	}
 

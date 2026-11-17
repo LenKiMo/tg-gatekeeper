@@ -51,6 +51,8 @@ type fakeAPI struct {
 	// profiles 覆盖 GetUserProfile 的完整返回值（username/头像）；缺省由 bios 推出。
 	profiles   map[int64]ports.UserProfile
 	profileErr error
+	// restrictErr 非 nil 时 RestrictNoMessages 失败（模拟限流/权限不足）。
+	restrictErr error
 	// challengeErr 非 nil 时，SendChallenge 直接失败——用来模拟申请模式下
 	// "用户没点过机器人，Telegram 不允许主动私聊"。
 	challengeErr error
@@ -73,7 +75,7 @@ func (f *fakeAPI) next() int64 {
 
 func (f *fakeAPI) RestrictNoMessages(_ context.Context, chatID, userID int64) error {
 	f.restricted = append(f.restricted, apiCall{name: "restrict", chatID: chatID, userID: userID})
-	return nil
+	return f.restrictErr
 }
 
 func (f *fakeAPI) RestorePermissions(_ context.Context, chatID, userID int64) error {

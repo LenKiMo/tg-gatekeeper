@@ -23,6 +23,8 @@ const (
 	banReasonAdRequest banReason = "request_ad_word"
 	// banReasonAdRecheck 放行前复查简介命中广告词（含管理员点了"放行"的情况）。
 	banReasonAdRecheck banReason = "ad_recheck"
+	// banReasonRestrictFailed 禁言失败且对方不是管理员：这次验证做不下去。
+	banReasonRestrictFailed banReason = "restrict_failed"
 )
 
 // botFault 判断这次封禁是不是机器人自身故障造成的。这类封禁错不在用户，
