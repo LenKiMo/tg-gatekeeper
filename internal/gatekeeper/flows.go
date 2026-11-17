@@ -421,6 +421,10 @@ func (s *Service) beginJoinLedger(ctx context.Context, group domain.GroupConfig,
 		StartedAt:   now,
 		ExpiresAt:   now.Add(s.cfg.VerifyTimeout() + s.cfg.PrecheckGrace()),
 		Version:     1,
+		// 空切片而不是 nil：sessions.correct_hash 是 NOT NULL，账本阶段还没抽题、
+		// 自然没有答案摘要。写 nil 会让 INSERT 直接违反约束——生产上表现为"每次入群
+		// 都报 constraint failed 然后整条流程中断"（2026-11-17 17:48 三个号漏网）。
+		CorrectTokenHash: []byte{},
 	}
 	begin, err := s.registry.Begin(ctx, sess)
 	if err != nil {

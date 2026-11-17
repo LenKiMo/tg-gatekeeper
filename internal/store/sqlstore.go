@@ -417,6 +417,11 @@ const sessionCols = `id, chat_id, user_id, update_id, mode, state, display_name,
 
 // Begin 开始一次会话：同 update 幂等；同 key 的旧世代会被替换并作废其未执行副作用。
 func (r *Registry) Begin(ctx context.Context, s domain.Session) (ports.BeginResult, error) {
+	// correct_hash 是 NOT NULL：nil 切片会被驱动当成 NULL 写进去，直接违反约束。
+	// 归一成空 blob——调用方可能是"还没抽题"的账本会话，它本来就没有答案摘要。
+	if s.CorrectTokenHash == nil {
+		s.CorrectTokenHash = []byte{}
+	}
 	tx, err := r.h.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ports.BeginResult{}, err

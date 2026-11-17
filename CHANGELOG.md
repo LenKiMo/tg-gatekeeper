@@ -2,6 +2,17 @@
 
 只记录**会改变默认行为**的变更；其余修复见提交记录与 Release 说明。
 
+## v1.4.1
+
+- **修复致命回归**：入群账本会话在 `sessions.correct_hash`（NOT NULL 列）上写 nil，
+  导致 `INSERT` 直接违反约束、`verifyNewMember` 整条流程中断——不出题、不处置，
+  人静默留在群里。生产影响：2026-11-17 17:48 起 3 次入群全部漏过（每次间隔不到 1 秒
+  就报 `constraint failed`）。
+  修法两层：账本会话显式给空切片；`store.Registry.Begin` 把 nil 摘要归一成空 blob
+  （任何"还没抽题"的调用方都不会再踩）。
+- 补了一个**只用 SQLite 才能暴露**的测试：此前测试全走内存注册表，没有列约束，
+  所以这个 bug 在本地一路绿灯。
+
 ## v1.4.0
 
 - 新增**懒触发复查**（`gatekeeper.unknown_member_policy`: off|audit|ban，默认 off）：

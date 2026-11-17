@@ -61,7 +61,7 @@ func main() {
 
 // version 是构建版本号：源码构建显示下面这个值，发布流程用
 // -ldflags "-X main.version=<tag>" 覆盖成实际 tag。
-var version = "1.4.0"
+var version = "1.4.1"
 
 func runCmd(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
